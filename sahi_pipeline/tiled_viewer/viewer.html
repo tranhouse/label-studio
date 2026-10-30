@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>SAHI Tiled Viewer</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/openseadragon/4.1.0/openseadragon.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+        }
+
+        #viewer {
+            width: 100%;
+            height: 800px;
+            border: 1px solid #ccc;
+        }
+
+        .bbox {
+            border: 2px solid red;
+            box-sizing: border-box;
+            position: relative;
+            pointer-events: none;
+        }
+
+        .label {
+            position: absolute;
+            top: -22px;
+            left: 0;
+            background: red;
+            color: white;
+            font-size: 12px;
+            padding: 2px 4px;
+            white-space: nowrap;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+
+    <h2>SAHI Tiled Viewer Test</h2>
+    <div id="viewer"></div>
+
+    <script>
+        const IMAGE_WIDTH = 2040;
+        const IMAGE_HEIGHT = 1488;
+
+        const viewer = OpenSeadragon({
+            id: "viewer",
+            prefixUrl: "https://cdnjs.cloudflare.com/ajax/libs/openseadragon/4.1.0/images/",
+            tileSources: "0793.dzi",
+            maxZoomPixelRatio: 5,
+            visibilityRatio: 0.5,
+            constrainDuringPan: true,
+            showNavigator: true
+        });
+
+        viewer.addHandler("open", function () {
+            fetch("../sahi_results/0793_predictions.json")
+                .then(response => response.json())
+                .then(data => {
+                    data.predictions.forEach(pred => {
+                        const [x1, y1, x2, y2] = pred.bbox;
+
+                        const rect = new OpenSeadragon.Rect(
+                            x1 / IMAGE_WIDTH,
+                            y1 / IMAGE_HEIGHT,
+                            (x2 - x1) / IMAGE_WIDTH,
+                            (y2 - y1) / IMAGE_HEIGHT
+                        );
+
+                        const box = document.createElement("div");
+                        box.className = "bbox";
+
+                        const label = document.createElement("div");
+                        label.className = "label";
+                        label.textContent = `${pred.class} ${pred.confidence.toFixed(2)}`;
+                        box.appendChild(label);
+
+                        viewer.addOverlay(box, rect);
+                    });
+                })
+                .catch(error => {
+                    console.error("Error loading predictions:", error);
+                });
+        });
+    </script>
+
+</body>
+</html>

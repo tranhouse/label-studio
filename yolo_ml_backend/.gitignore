@@ -1,0 +1,7 @@
+.env
+.env.*
+ls_token.txt
+models/*.pt
+data/
+cache_dir/
+__pycache__/

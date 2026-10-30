@@ -1,0 +1,13 @@
+# YOLO dataset configuration
+# Set path to the local YOLO dataset before training or validation
+
+path: ./yolo_dataset
+
+train: images/train
+val: images/val
+
+nc: 3
+names:
+  0: Car
+  1: Person
+  2: Ship
