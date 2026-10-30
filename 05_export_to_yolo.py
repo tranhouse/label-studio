@@ -8,7 +8,7 @@ Tiles annotated with no boxes (submitted empty) become background images, which 
 what you want for aerial imagery. Tasks with no submitted annotation are skipped.
 
 Example (PowerShell):
-  python export_to_yolo.py --url http://ci-cdos-labelstudio-dev.ent.dfo-mpo.ca:8080 --project-id 61 `
+  python 05_export_to_yolo.py --url http://ci-cdos-labelstudio-dev.ent.dfo-mpo.ca:8080 --project-id 61 `
       --train-dir dataset/sliced/train --val-dir dataset/sliced/val --classes Car Person Ship
 """
 import argparse

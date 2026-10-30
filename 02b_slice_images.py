@@ -1,6 +1,6 @@
 """Slice large images into overlapping tiles with SAHI.
 
-Reads the split lists made by split_dataset.py and writes tiles for every split
+Reads the split lists made by 02a_split_dataset.py and writes tiles for every split
 (train, val and test) so each one can be loaded into Label Studio as tiles:
   * train/val tiles -> annotated in Label Studio, then used for YOLO training
   * test tiles      -> uploaded to a separate project and pre-annotated by the ML backend
@@ -9,7 +9,7 @@ Each split folder also gets tile_metadata.csv, which records where every tile ca
 from in its original image.
 
 Example (PowerShell):
-  python slice_images.py --splits dataset_splits --output dataset/sliced
+  python 02b_slice_images.py --splits dataset_splits --output dataset/sliced
 """
 import argparse
 import csv

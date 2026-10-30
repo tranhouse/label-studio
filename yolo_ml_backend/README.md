@@ -12,7 +12,7 @@ The project's labeling config names the model file, and the backend loads it fro
 ```
 
 Put the trained weights at `yolo_ml_backend/models/best.pt`
-(`python train_yolo.py --copy-to-backend` does this). Restart the backend after replacing the file.
+(`python 06_train_yolo.py --copy-to-backend` does this). Restart the backend after replacing the file.
 
 ## Token
 
@@ -26,7 +26,7 @@ Use a separate virtual environment, because this installs development versions o
 the Label Studio SDK.
 
 ```powershell
-cd C:\Users\trant\label-studio\yolo_ml_backend
+cd <path-to-repo>\yolo_ml_backend
 python -m venv .venv-backend
 .\.venv-backend\Scripts\Activate.ps1
 python -m pip install -r requirements-base.txt -r requirements.txt

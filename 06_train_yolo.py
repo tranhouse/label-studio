@@ -1,10 +1,10 @@
-"""Train a YOLO model on the annotated tiles exported by export_to_yolo.py.
+"""Train a YOLO model on the annotated tiles exported by 05_export_to_yolo.py.
 
 YOLO trains on the train tiles and scores the val tiles after every epoch; the
 epoch with the best validation mAP is saved as best.pt.
 
 Example (PowerShell):
-  python train_yolo.py --data yolo_dataset/data.yaml --epochs 50 --copy-to-backend
+  python 06_train_yolo.py --data yolo_dataset/data.yaml --epochs 50 --copy-to-backend
 """
 import argparse
 import shutil
@@ -15,7 +15,7 @@ from ultralytics import YOLO
 
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--data", default="yolo_dataset/data.yaml", help="data.yaml written by export_to_yolo.py")
+    p.add_argument("--data", default="yolo_dataset/data.yaml", help="data.yaml written by 05_export_to_yolo.py")
     p.add_argument("--model", default="yolo11n.pt", help="Pretrained starting weights")
     p.add_argument("--epochs", type=int, default=50)
     p.add_argument("--imgsz", type=int, default=640, help="Match the tile size used when slicing")
