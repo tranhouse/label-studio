@@ -1,2 +1,20 @@
+# Virtual environments
 .venv/
+.venv-backend/
+
+# Raw images and generated data (never commit imagery to this public repo)
 data/
+dataset/
+dataset_splits/
+yolo_dataset/
+runs/
+uploaded_tiles.txt
+
+# Downloaded pretrained weights
+yolo11*.pt
+yolov8*.pt
+
+# Python and secrets
+__pycache__/
+*.pyc
+.env

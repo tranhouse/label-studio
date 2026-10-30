@@ -4,7 +4,7 @@ import argparse
 
 # Configure command-line arguments
 parser = argparse.ArgumentParser(
-    description="Split original images into training, validation, and testing sets."
+    description="Split original images into training (70%), validation (15%) and testing (15%) sets."
 )
 
 parser.add_argument(

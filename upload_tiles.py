@@ -81,10 +81,11 @@ def main():
             for f in batch:
                 log.write(str(f.resolve()) + "\n")
             log.flush()
-            print(f"  {min(i + args.batch_size, len(todo))}/{len(todo)} uploaded "
-                  f"(+{r.json().get('task_count', len(batch))} tasks)")
+            print(f"  {min(i + args.batch_size, len(todo))}/{len(todo)} uploaded")
 
-    print(f"Done. Open {args.url}/projects/{project_id}/data")
+    # Confirm against the project's own count rather than the import response
+    task_count = ls.request("GET", f"/api/projects/{project_id}/").json().get("task_number")
+    print(f"Project {project_id} now has {task_count} tasks. Open {args.url}/projects/{project_id}/data")
 
 
 if __name__ == "__main__":

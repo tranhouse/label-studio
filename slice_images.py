@@ -1,159 +1,83 @@
-from pathlib import Path
-from PIL import Image
-import csv
+"""Slice large images into overlapping tiles with SAHI.
+
+Reads the split lists made by split_dataset.py and writes tiles for every split
+(train, val and test) so each one can be loaded into Label Studio as tiles:
+  * train/val tiles -> annotated in Label Studio, then used for YOLO training
+  * test tiles      -> uploaded to a separate project and pre-annotated by the ML backend
+
+Each split folder also gets tile_metadata.csv, which records where every tile came
+from in its original image.
+
+Example (PowerShell):
+  python slice_images.py --splits dataset_splits --output dataset/sliced
+"""
 import argparse
+import csv
+from pathlib import Path
 
-parser = argparse.ArgumentParser(
-    description="Slice large images into overlapping tiles."
-)
+from PIL import Image
+from sahi.slicing import slice_image
 
-parser.add_argument(
-    "--splits",
-    type=Path,
-    default=Path("dataset_splits"),
-    help="Folder containing train.txt, val.txt, and test.txt"
-)
-
-parser.add_argument(
-    "--output",
-    type=Path,
-    default=Path("dataset/sliced"),
-    help="Output folder for sliced images"
-)
-
-parser.add_argument(
-    "--tile-size",
-    type=int,
-    default=640
-)
-
-parser.add_argument(
-    "--overlap",
-    type=float,
-    default=0.20
-)
-
-args = parser.parse_args()
-
-tile_size = args.tile_size
-overlap = args.overlap
-
-if tile_size <= 0:
-    raise ValueError("Tile size must be positive.")
-
-if not 0 <= overlap < 1:
-    raise ValueError("Overlap must be between 0 and 1.")
-
-step = int(tile_size * (1 - overlap))
-
-if step < 1:
-    raise ValueError("Overlap produces an invalid step size.")
-
-Image.MAX_IMAGE_PIXELS = None
+Image.MAX_IMAGE_PIXELS = None  # aerial survey images can exceed Pillow's default limit
 
 
-def tile_positions(length, tile_size, step):
-    """Return tile starting positions with full-sized edge tiles."""
-    if length <= tile_size:
-        return [0]
+def main():
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--splits", type=Path, default=Path("dataset_splits"),
+                   help="Folder containing train.txt, val.txt and test.txt")
+    p.add_argument("--output", type=Path, default=Path("dataset/sliced"), help="Output folder for tiles")
+    p.add_argument("--tile-size", type=int, default=640)
+    p.add_argument("--overlap", type=float, default=0.20, help="Overlap ratio between neighbouring tiles")
+    p.add_argument("--split-names", nargs="+", default=["train", "val", "test"])
+    args = p.parse_args()
 
-    positions = list(range(0, length - tile_size + 1, step))
-    last = length - tile_size
+    if args.tile_size <= 0:
+        raise ValueError("Tile size must be positive.")
+    if not 0 <= args.overlap < 1:
+        raise ValueError("Overlap must be between 0 and 1.")
 
-    if positions[-1] != last:
-        positions.append(last)
+    for split in args.split_names:
+        split_file = args.splits / f"{split}.txt"
+        if not split_file.exists():
+            raise FileNotFoundError(f"Missing split file: {split_file}")
 
-    return positions
+        destination = args.output / split
+        destination.mkdir(parents=True, exist_ok=True)
+        image_paths = [Path(line.strip()) for line in split_file.read_text(encoding="utf-8").splitlines()
+                       if line.strip()]
+
+        with open(destination / "tile_metadata.csv", "w", newline="", encoding="utf-8") as csvfile:
+            writer = csv.writer(csvfile)
+            writer.writerow(["tile_name", "original_image", "original_width", "original_height",
+                             "tile_x", "tile_y", "tile_width", "tile_height"])
+
+            for image_path in image_paths:
+                if not image_path.exists():
+                    print(f"Skipping missing image: {image_path}")
+                    continue
+
+                with Image.open(image_path) as img:
+                    img = img.convert("RGB")
+                    width, height = img.size
+                    result = slice_image(
+                        image=img,
+                        slice_height=args.tile_size,
+                        slice_width=args.tile_size,
+                        overlap_height_ratio=args.overlap,
+                        overlap_width_ratio=args.overlap,
+                        auto_slice_resolution=False,
+                    )
+
+                for tile_array, (x, y) in zip(result.images, result.starting_pixels):
+                    tile = Image.fromarray(tile_array)
+                    tile_name = f"{image_path.stem}_x{x}_y{y}.png"
+                    tile.save(destination / tile_name)
+                    writer.writerow([tile_name, image_path.name, width, height, x, y, tile.width, tile.height])
+
+                print(f"{split}: {image_path.name} ({width}x{height}) -> {len(result.images)} tiles")
+
+    print(f"Slicing completed. Tiles saved under {args.output.resolve()}")
 
 
-for split in ["train", "val", "test"]:
-
-    split_file = args.splits / f"{split}.txt"
-
-    if not split_file.exists():
-        raise FileNotFoundError(
-            f"Missing split file: {split_file}"
-        )
-
-    destination = args.output / split
-    destination.mkdir(parents=True, exist_ok=True)
-
-    with open(split_file, "r", encoding="utf-8") as f:
-        image_paths = [
-            Path(line.strip())
-            for line in f
-            if line.strip()
-        ]
-
-    metadata_file = destination / "tile_metadata.csv"
-
-    with open(metadata_file, "w", newline="", encoding="utf-8") as csvfile:
-
-        writer = csv.writer(csvfile)
-
-        writer.writerow([
-            "tile_name",
-            "original_image",
-            "original_width",
-            "original_height",
-            "tile_x",
-            "tile_y",
-            "tile_width",
-            "tile_height"
-        ])
-
-        for image_path in image_paths:
-
-            if not image_path.exists():
-                print(f"Skipping missing image: {image_path}")
-                continue
-
-            with Image.open(image_path) as img:
-
-                width, height = img.size
-
-                x_positions = tile_positions(
-                    width, tile_size, step
-                )
-
-                y_positions = tile_positions(
-                    height, tile_size, step
-                )
-
-                tile_count = 0
-
-                for y in y_positions:
-                    for x in x_positions:
-
-                        tile = img.crop((
-                            x,
-                            y,
-                            min(x + tile_size, width),
-                            min(y + tile_size, height)
-                        ))
-
-                        tile_name = (
-                            f"{image_path.stem}_x{x}_y{y}.png"
-                        )
-
-                        tile.save(destination / tile_name)
-
-                        writer.writerow([
-                            tile_name,
-                            image_path.name,
-                            width,
-                            height,
-                            x,
-                            y,
-                            tile.width,
-                            tile.height
-                        ])
-
-                        tile_count += 1
-
-                print(
-                    f"{split}: {image_path.name} -> "
-                    f"{tile_count} tiles"
-                )
-
-print("Slicing completed.")
+if __name__ == "__main__":
+    main()

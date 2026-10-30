@@ -1,96 +1,70 @@
-\# YOLO ML Backend - Docker Setup
+# YOLO ML Backend
 
+This is the Label Studio YOLO ML backend (from HumanSignal's `label-studio-ml-backend`).
+It hosts the trained model and returns bounding-box predictions to Label Studio.
 
+## How it finds the model
 
-\## Overview
+The project's labeling config names the model file, and the backend loads it from `models/`:
 
+```xml
+<RectangleLabels name="label" toName="image" model_path="best.pt" model_score_threshold="0.25" canRotate="false">
+```
 
+Put the trained weights at `yolo_ml_backend/models/best.pt`
+(`python train_yolo.py --copy-to-backend` does this). Restart the backend after replacing the file.
 
-This folder contains the Docker configuration and Python code used to connect a trained YOLO object detection model to Label Studio.
+## Token
 
+The backend downloads each tile from Label Studio, so it needs a token. Use a
+**legacy token**: enable it under **Organization > API Tokens Settings**, then copy it from
+**Account & Settings**.
 
+## Option A: run with Python (Windows, no Docker)
 
-The backend allows Label Studio to request object detection predictions and display them as pre-annotations.
+Use a separate virtual environment, because this installs development versions of
+the Label Studio SDK.
 
+```powershell
+cd C:\Users\trant\label-studio\yolo_ml_backend
+python -m venv .venv-backend
+.\.venv-backend\Scripts\Activate.ps1
+python -m pip install -r requirements-base.txt -r requirements.txt
 
+$env:LABEL_STUDIO_URL = 'http://localhost:8080'
+$env:LABEL_STUDIO_HOST = 'http://localhost:8080'
+$env:LABEL_STUDIO_API_KEY = 'paste-legacy-token-here'
+python _wsgi.py --port 9090
+```
 
-\## Requirements
+Check it at `http://localhost:9090/health` (should return `"status": "UP"`).
 
+## Option B: run with Docker
 
+```powershell
+cd yolo_ml_backend
+$env:LABEL_STUDIO_API_KEY = 'paste-legacy-token-here'
+docker compose up --build
+```
 
-\- Docker Desktop with Docker Compose
+Inside Docker, `localhost` is the container itself, so `docker-compose.yml` reaches a
+Label Studio on the same computer through `http://host.docker.internal:8080`.
 
-\- Label Studio
+## Connect Label Studio
 
-\- Trained YOLO model (`best.pt`)
+1. In the project, open **Settings > Model > Connect Model**.
+2. Backend URL: `http://localhost:9090`, then **Validate and Save**.
+3. In the Data Manager, select tasks, then **Actions > Retrieve Predictions**.
 
-\- Label Studio Legacy API Token
+To have predictions appear automatically when a task is opened, turn on
+**Settings > Annotation > Use predictions to prelabel tasks** and select the model.
 
+## Troubleshooting
 
+- **No boxes returned:** the model may not be confident enough. Temporarily lower
+  `model_score_threshold` (for example to `0.01`) to confirm the connection works.
+- **401 / 403 when fetching images:** wrong token type or value. Use the legacy token.
+- **Labels missing:** the model's class names must exactly match the label values in the labeling config.
+- **pip conflict on numpy:** `requirements.txt` must allow `numpy>=2.2` for the current SDK.
 
-\## Setup
-
-
-
-1\. Clone the `OCDS-AI-Student-Deliverables` repository.
-
-2\. Navigate to `Large-Image-Dataset-Label-Studio/yolo\_ml\_backend`.
-
-3\. Copy `../trained\_model/best.pt` into `models/` and rename it `my\_model.pt`.
-
-4\. Create a local `.env` file containing:
-
-
-
-&#x20;  `LABEL\_STUDIO\_API\_KEY=<YOUR\_LEGACY\_API\_TOKEN>`
-
-
-
-&#x20;  `TEST\_ENV=false`
-
-
-
-5\. Ensure Label Studio is running on port 8080.
-
-6\. Build and start the backend:
-
-
-
-&#x20;  `docker compose up -d --build`
-
-
-
-7\. Verify the backend is available at `http://localhost:9090`.
-
-8\. In Label Studio, open the project settings, select Machine Learning, and connect the backend using `http://localhost:9090`.
-
-
-
-\## Generate Predictions
-
-
-
-1\. Upload images into a Label Studio project.
-
-2\. Confirm the labeling configuration uses the same classes as the model.
-
-3\. Select the uploaded tasks.
-
-4\. Choose \*\*Actions → Retrieve Predictions\*\*.
-
-5\. Open a task to review the detected bounding boxes.
-
-
-
-\## Notes
-
-
-
-\- The backend uses `host.docker.internal:8080` to access Label Studio running on the same Windows computer.
-
-\- The model is mounted into the Docker container using `./models:/app/models`.
-
-\- Do not commit `.env`, API tokens, or passwords to GitHub.
-
-\- The configuration was previously tested locally on Windows. Other environments may require changes to networking and Docker settings.
-
+Do not commit `.env` files, tokens or passwords.
