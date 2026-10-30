@@ -4,12 +4,12 @@ Examples (PowerShell):
   $env:LABEL_STUDIO_TOKEN = "<your token>"
 
   # Create a new project with a rectangle-labels config and upload train + val tiles
-  python upload_tiles.py --url http://ci-cdos-labelstudio-dev.ent.dfo-mpo.ca:8080 `
+  python 03_upload_tiles.py --url http://ci-cdos-labelstudio-dev.ent.dfo-mpo.ca:8080 `
       --create-project "DIV2K tiles - train/val" --labels Car Person Ship `
       --tiles dataset/sliced/train dataset/sliced/val
 
   # Upload into an existing project
-  python upload_tiles.py --url http://... --project-id 61 --tiles dataset/sliced/train
+  python 03_upload_tiles.py --url http://... --project-id 61 --tiles dataset/sliced/train
 """
 import argparse
 from pathlib import Path
