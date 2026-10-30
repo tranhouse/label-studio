@@ -158,8 +158,9 @@ skipped.
 The project ID is also the number after `/projects/` in the browser address bar:
 `http://localhost:8080/projects/1/data`.
 
-Before annotating, stop boxes from being rotated (YOLO only supports straight boxes):
-**Settings > Labeling Interface > Code**, then add `canRotate="false"` to the
+Projects created by the script already stop boxes from being rotated (YOLO only
+supports straight boxes). For a project created before this was added, go to
+**Settings > Labeling Interface > Code**, add `canRotate="false"` to the
 `RectangleLabels` line and save:
 
 ```xml
