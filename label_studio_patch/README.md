@@ -24,12 +24,11 @@ the predictions are identical to stock Label Studio's.
 Use the same PowerShell window and `.venv` that you run `label-studio start` from.
 
 1. Stop Label Studio (Ctrl+C in its window).
-2. Get this folder and install the patch:
+2. Get the latest code and install the patch:
 
    ```powershell
    cd <path-to-repo>
-   git fetch origin
-   git checkout ls-progress-bar
+   git pull
    .\.venv\Scripts\Activate.ps1
    python label_studio_patch/install_patch.py
    ```
