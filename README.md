@@ -36,6 +36,7 @@ Raw images -> split 70/15/15 -> SAHI slicing (640 px tiles) -> annotate train/va
 | `03_upload_tiles.py` | 3, 8 | Creates a project and labeling config, uploads tiles through the REST API |
 | `05_export_to_yolo.py` | 5 | Converts Label Studio annotations to `yolo_dataset/` (images, labels, `data.yaml`) |
 | `06_train_yolo.py` | 6 | Trains YOLO, prints the `best.pt` path, can copy it into the backend |
+| `07_retrieve_predictions.py` | 8 | Gets predictions from the ML backend for a project, with a progress bar |
 | `ls_auth.py` | - | Shared Label Studio authentication (Personal Access Token or legacy token) |
 | `yolo_ml_backend/` | 7 | Label Studio YOLO ML backend |
 | `trained_model/` | - | Earlier DIV2K model (Car / Person / Ship), kept for reference |
@@ -275,8 +276,19 @@ Then in Label Studio, in the test project:
 
 1. **Settings > Model > Connect Model.** Enter a name (for example `YOLO pilot`) and the
    backend URL `http://localhost:9090`, then click **Validate and Save**.
-2. In the Data Manager, tick the box at the top to select all tasks, then choose
-   **Actions > Retrieve Predictions**.
+2. Get the predictions. Either:
+   - **With a progress bar (recommended for more than a few dozen tiles):** in window 2, run
+
+     ```powershell
+     python 07_retrieve_predictions.py --url http://localhost:8080 --project-id <ID>
+     ```
+
+     It runs the same Retrieve Predictions action as the button, 10 tiles at a time, and
+     shows tiles done, speed and time left. At the end it reports how many tiles got
+     predictions. If it stops partway, rerun the same command; finished tiles are skipped.
+   - **From the browser:** in the Data Manager, tick the box at the top to select all
+     tasks, then choose **Actions > Retrieve Predictions**. It shows only a spinner until
+     every tile is done.
 3. Open each tile. Predicted boxes appear as pre-annotations. Correct or delete the wrong
    ones, add any missed, and submit.
 
