@@ -147,8 +147,11 @@ def upload_batch(ls, project_id, batch):
 
     handles = [open(f, "rb") for f in batch]
     try:
-        # Multipart upload: one ("files", (name, file, content type)) entry per tile
-        payload = [("files", (f.name, h, MIME[f.suffix.lower()])) for f, h in zip(batch, handles)]
+        # Multipart upload: one (field name, (name, file, content type)) entry per tile.
+        # Each tile needs its own field name: Label Studio keeps only the last file per
+        # field name, so sending them all as "files" would create one task per batch.
+        payload = [(f"file{n}", (f.name, h, MIME[f.suffix.lower()]))
+                   for n, (f, h) in enumerate(zip(batch, handles))]
         ls.request("POST", f"/api/projects/{project_id}/import", files=payload)
     finally:
         # Always close the files, even if the upload failed
