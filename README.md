@@ -336,6 +336,8 @@ anything that doesn't match.
 | `docker` is not recognized | Docker isn't installed; use the Python option in step 7 |
 | pip conflict on `numpy<2` while installing the backend | `yolo_ml_backend/requirements.txt` must contain `numpy>=2.2` (already fixed in this repo) |
 | Validate and Save fails | Check the backend window is running and `http://localhost:9090/health` returns `UP` |
+| Validate and Save says "URL resolves to a reserved network address" | Recent Label Studio versions (confirmed on 1.23.2) block backends on `localhost` by default. Stop Label Studio (window 1), run `$env:ML_BLOCK_LOCAL_IP = 'false'` and `$env:SSRF_PROTECTION_ENABLED = 'false'`, then `label-studio start` again. Only needed when the backend runs on the same PC |
+| Fewer tasks than tiles after `03_upload_tiles.py` | Older copies of the script sent every tile under the same field name, and Label Studio kept only one per batch. Pull the latest script, delete the project's tasks and upload again |
 | 401 / 403 errors in the backend window | The backend can't download tiles; set `LABEL_STUDIO_API_KEY` to the legacy token and restart it |
 | Retrieve Predictions returns no boxes | Lower `model_score_threshold`, and check that the label names match the model's classes |
 
