@@ -104,6 +104,8 @@ def retrieve_batch(ls, project_id, task_ids):
         project_id: Project the tasks belong to.
         task_ids: IDs of the tasks in this batch.
     """
+    # /api/dm/actions runs a Data Manager action; "id" names the action and
+    # selectedItems with all=False + included=[...] limits it to exactly these tasks
     ls.request("POST", "/api/dm/actions",
                params={"id": "retrieve_tasks_predictions", "project": project_id},
                json={"selectedItems": {"all": False, "included": task_ids}})
@@ -114,7 +116,10 @@ def main():
     args = parse_args()
     ls = LabelStudio(args.url)
 
+    # Fail early with clear instructions if no model is connected to the project
     backend = check_backend(ls, args.project_id)
+
+    # Every task in the project; with --only-missing, just the ones with no prediction yet
     tasks = list_tasks(ls, args.project_id)
     if args.only_missing:
         todo = [task_id for task_id, n in tasks if n == 0]
@@ -127,14 +132,20 @@ def main():
         return
 
     start = time.time()
+    # tqdm draws the progress bar in the terminal and works out the speed and time left
+    # from how fast bar.update() is called
     with tqdm(total=len(todo), unit="tile", desc="Predicting") as bar:
+        # One request per batch: each returns once the backend has predicted those tiles,
+        # which is what lets the bar move as the run progresses
         for i in range(0, len(todo), args.batch_size):
             batch = todo[i:i + args.batch_size]
             try:
                 retrieve_batch(ls, args.project_id, batch)
             except RuntimeError as e:
                 # Keep going so one bad batch doesn't stop the run; report it at the end
+                # (tqdm.write prints above the bar without breaking it)
                 tqdm.write(f"  Batch starting at task {batch[0]} failed: {e}")
+            # Advance the bar by this batch whether it succeeded or not
             bar.update(len(batch))
 
     # Check against Label Studio rather than trusting the action's reply: if the backend

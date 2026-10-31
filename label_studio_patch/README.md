@@ -75,17 +75,109 @@ it.
 
 ## How it works
 
-- **Server** (`basic.py`): a hidden action, `selected_task_ids`, returns the IDs of the
-  selected tasks. It resolves "select all", filters and exclusions exactly as the normal
-  action does. `retrieve_tasks_predictions` now also returns `created` and
-  `with_predictions` counts. Its existing response fields are unchanged.
-- **Web page** (`ActionProgress.jsx`, `AppStore.js` in the Data Manager): Retrieve
-  Predictions asks for the IDs, then calls the normal action for 10 tasks at a time and
-  updates the dialog after each call.
+### Why stock Label Studio can only show a spinner
 
-To rebuild from source: check out tag `1.23.2` of HumanSignal/label-studio, `git am`
-the `.patch`, then in `web/` run `yarn install --frozen-lockfile` and
-`NODE_ENV=production yarn ls:build`. The result is in `web/dist/apps/labelstudio`.
+When you click **Retrieve Predictions > OK**, the page sends one request:
+
+```
+POST /api/dm/actions?id=retrieve_tasks_predictions&project=<ID>
+body: { "selectedItems": { "all": true, "excluded": [] }, "filters": {...} }
+```
+
+The server works out which tasks are selected, sends all of them to the ML backend,
+saves the boxes that come back, and only then answers. Until that single answer arrives,
+the page has nothing to measure, so it shows a spinner. Large selections can also run
+past the server's request timeout, which is why stock Label Studio's own dialog warned
+about timeouts.
+
+### What the patch changes
+
+The work is split into many small requests, and the dialog updates after each one:
+
+```
+Browser (Data Manager)                         Label Studio server            ML backend
+──────────────────────                         ───────────────────            ──────────
+OK clicked
+ │ 1. POST /api/dm/actions?id=selected_task_ids   ──►  resolve selection
+ │    (same body as stock: select-all, filters)   ◄──  { task_ids: [2,3,…,36] }
+ │    dialog opens: "0 of 35"
+ │
+ │ 2. POST /api/dm/actions?id=retrieve_tasks_predictions
+ │    body: { selectedItems: { included: [2..11] } }  ──►  send 10 tasks  ──►  best.pt
+ │                                                      save predictions ◄──  boxes
+ │                                                 ◄──  { created: 10, with_predictions: 10 }
+ │    bar → 10 of 35
+ │ … repeat for [12..21], [22..31], [32..36], checking Stop before each …
+ │
+ └ 3. "Finished", Close → table and counts refresh
+```
+
+Three files change, all marked `[DFO progress patch]` in the source:
+
+| File (in Label Studio) | Side | Change |
+|---|---|---|
+| `label_studio/data_manager/actions/basic.py` | Server (Python) | New hidden action `selected_task_ids`, which returns the selected task IDs. `retrieve_tasks_predictions` also returns `created` and `with_predictions` counts. |
+| `web/libs/datamanager/src/stores/AppStore.js` | Web page (JavaScript) | `invokeAction()` sends Retrieve Predictions to the new `invokeActionInBatches()`, which runs steps 1-3 above. |
+| `web/libs/datamanager/src/components/Common/ActionProgress/ActionProgress.jsx` | Web page (React) | The dialog: bar, times, counts, Stop and Close buttons. |
+
+Details worth knowing:
+
+- **Same selection as stock.** Step 1 uses the same request body as the stock action,
+  so the server resolves "select all", filters and unticked rows with the same code
+  (`ProjectActionsAPI.post`). The IDs it returns are exactly the tasks the stock action
+  would have processed.
+- **Same prediction code as stock.** Step 2 calls the unchanged action endpoint. Only
+  the selection is smaller, so predictions are identical.
+- **Hidden, but permission-checked.** `selected_task_ids` is registered with
+  `'hidden': True`, which keeps it out of the Actions menu. It needs the same permission
+  as Retrieve Predictions.
+- **The counts.** Label Studio skips tasks that already have a prediction from the
+  current model version. When the ML backend fails, it logs the error, saves nothing and
+  still answers "Retrieved N predictions". The patched server counts afterwards:
+  - `created`: predictions saved by this request
+  - `with_predictions`: tasks that now have a prediction from this model version
+
+  The dialog derives *skipped* = with_predictions − created, and *no prediction returned*
+  = batch size − with_predictions.
+- **Stop.** The loop checks a flag before sending each batch. A request already sent
+  can't be recalled, so Stop takes effect after the current batch.
+- **Errors.** A failed batch is counted as "no prediction returned" and its error is
+  shown in the dialog. The run continues with the next batch instead of opening Label
+  Studio's global error popup.
+- **Batch size.** 10 tasks per request (`BATCHED_ACTIONS` in `AppStore.js`). That keeps
+  each request short even with a slow model, and costs little extra overhead.
+
+### How it gets into your installed Label Studio
+
+Label Studio from pip contains Python source files and a web page that HumanSignal has
+already compiled to JavaScript (`web/dist/apps/labelstudio/`). The server only hands
+those compiled files to the browser and never rebuilds them. So:
+
+- the Python change is a replacement `basic.py`
+- the JavaScript changes were compiled once, here, from the patched source with
+  Label Studio's own build (`yarn ls:build`), and the output folder ships as
+  `labelstudio_frontend.zip`
+
+`install_patch.py` copies `basic.py` over the installed one, replaces the
+`web/dist/apps/labelstudio` folder with the zip's contents, and keeps the originals as
+`.orig` backups for `--undo`. Neither Node.js nor a build is needed on your PC or the
+server.
+
+### Rebuilding from source
+
+Needed only to change the patch, or to port it to another Label Studio version:
+
+```bash
+git clone --branch 1.23.2 --depth 1 https://github.com/HumanSignal/label-studio
+cd label-studio
+git am <path-to-repo>/label_studio_patch/retrieve-predictions-progress.patch
+cd web
+yarn install --frozen-lockfile
+NODE_ENV=production yarn ls:build          # output: web/dist/apps/labelstudio
+```
+
+Then copy `label_studio/data_manager/actions/basic.py` to `basic.py` here, and zip
+`web/dist/apps/labelstudio` (without the `.map` files) as `labelstudio_frontend.zip`.
 
 ## Tested
 

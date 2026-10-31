@@ -1,4 +1,4 @@
-From 608e50b67ff769117c8a16cb970a9f3fdfe3e5de Mon Sep 17 00:00:00 2001
+From 9eeda8be17b244035c35d9999fcc85da559085a5 Mon Sep 17 00:00:00 2001
 From: tranhouse <4tan.tran@gmail.com>
 Date: Sat, 31 Oct 2026 09:02:59 -0400
 Subject: [PATCH] Retrieve Predictions: run in batches with a progress dialog
@@ -6,22 +6,38 @@ Subject: [PATCH] Retrieve Predictions: run in batches with a progress dialog
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_018ZBdghcp7P7mVhGKYxPuHk
 ---
- label_studio/data_manager/actions/basic.py    |  54 +++++-
- .../Common/ActionProgress/ActionProgress.jsx  | 163 ++++++++++++++++++
- web/libs/datamanager/src/stores/AppStore.js   | 109 ++++++++++++
- 3 files changed, 321 insertions(+), 5 deletions(-)
+ label_studio/data_manager/actions/basic.py    |  91 ++++++-
+ .../Common/ActionProgress/ActionProgress.jsx  | 237 ++++++++++++++++++
+ web/libs/datamanager/src/stores/AppStore.js   | 165 ++++++++++++
+ 3 files changed, 488 insertions(+), 5 deletions(-)
  create mode 100644 web/libs/datamanager/src/components/Common/ActionProgress/ActionProgress.jsx
 
 diff --git a/label_studio/data_manager/actions/basic.py b/label_studio/data_manager/actions/basic.py
-index 8f5b88e..d2ac538 100644
+index 8f5b88e..d0269b9 100644
 --- a/label_studio/data_manager/actions/basic.py
 +++ b/label_studio/data_manager/actions/basic.py
-@@ -27,8 +27,46 @@ def retrieve_tasks_predictions(project, queryset, **kwargs):
+@@ -24,11 +24,79 @@ logger = logging.getLogger(__name__)
+ def retrieve_tasks_predictions(project, queryset, **kwargs):
+     """Retrieve predictions by tasks ids
+ 
++    Sends the tasks to the project's ML backend, which runs the model and returns
++    predictions. Label Studio saves them on the tasks.
++
++    [DFO progress patch] The web page now calls this for 10 tasks at a time (see
++    invokeActionInBatches in web/libs/datamanager/src/stores/AppStore.js) instead of once
++    for the whole selection. The response also gains "created", "with_predictions" and
++    "model_version", which the progress dialog uses. "processed_items" and "detail" are
++    unchanged, so existing API users are not affected.
++
      :param project: project instance
      :param queryset: filtered tasks db queryset
      """
 -    evaluate_predictions(queryset)
 -    return {'processed_items': queryset.count(), 'detail': 'Retrieved ' + str(queryset.count()) + ' predictions'}
++    # evaluate_predictions() -> MLBackend.predict_tasks(). Its return value says what
++    # happened: a list of the Prediction objects it saved, the model version string if
++    # every task already had a prediction from that version, or None if the backend
++    # isn't ready. Stock Label Studio ignored it.
 +    result = evaluate_predictions(queryset)
 +    count = queryset.count()
 +    response = {'processed_items': count, 'detail': 'Retrieved ' + str(count) + ' predictions'}
@@ -30,20 +46,34 @@ index 8f5b88e..d2ac538 100644
 +
 +
 +def _prediction_counts(project, queryset, result):
-+    """Report what Retrieve Predictions actually did, so the progress dialog can show it.
++    """[DFO progress patch] Report what Retrieve Predictions actually did.
 +
-+    predict_tasks() skips tasks that already have a prediction from the current model
-+    version, and when the ML backend errors it logs the error and saves nothing. Counting
-+    afterwards tells those cases apart:
++    Stock Label Studio answers "Retrieved N predictions" whatever happened:
++    predict_tasks() silently skips tasks that already have a prediction from the current
++    model version, and when the ML backend errors it logs the error and saves nothing.
++    Counting afterwards tells those cases apart:
 +
 +    * created: predictions saved by this call
 +    * with_predictions: tasks that now have a prediction from the current model version
-+      (includes ones skipped because they already had one)
++      (new ones plus ones that were skipped because they already had one)
++
++    The web page derives: skipped = with_predictions - created, and
++    missing = tasks sent - with_predictions (no boxes above the threshold, or a backend error).
++
++    :param project: project instance
++    :param queryset: the tasks that were sent to the ML backend
++    :param result: what evaluate_predictions() returned (see retrieve_tasks_predictions)
++    :return: dict with created, with_predictions and model_version
 +    """
++    # A fresh query, so model_version is the one predict_tasks() just saved
 +    backend = project.ml_backend
 +    if not backend:
 +        return {'created': 0, 'with_predictions': 0, 'model_version': None}
++
++    # Only a list means predictions were saved; a string or None means none were
 +    created = len(result) if isinstance(result, list) else 0
++
++    # distinct(): the join on predictions would otherwise count a task once per prediction
 +    with_predictions = (
 +        Task.objects.filter(id__in=queryset.values('id'), predictions__model_version=backend.model_version)
 +        .distinct()
@@ -60,24 +90,34 @@ index 8f5b88e..d2ac538 100644
 +    tasks to the ML backend in small batches so it can show progress and avoid the
 +    request timeout that one large Retrieve Predictions call can hit.
 +    """
++    # The queryset arrives already filtered by ProjectActionsAPI.post() from the request
++    # body (selectedItems, filters), the same way as for every other action. Sorting by
++    # ID makes batches go down the table in a stable order.
 +    task_ids = list(queryset.order_by('id').values_list('id', flat=True))
 +    return {'task_ids': task_ids, 'total': len(task_ids)}
  
  
  def delete_tasks(project, queryset, **kwargs):
-@@ -179,13 +217,19 @@ actions: list[DataManagerAction] = [
+@@ -179,13 +247,26 @@ actions: list[DataManagerAction] = [
          'order': 90,
          'dialog': {
              'title': 'Retrieve Predictions',
 -            'text': 'Send the selected tasks to all ML backends connected to the project.'
 -            'This operation might be abruptly interrupted due to a timeout. '
 -            'The recommended way to get predictions is to update tasks using the Label Studio API.'
++            # [DFO progress patch] The stock text warned about timeouts and suggested the API
++            # instead; batching removes that problem, so the text describes the progress bar.
 +            'text': 'Send the selected tasks to the ML backend connected to the project. '
 +            'Tasks are sent in small batches and a progress bar shows how many are done. '
              'Please confirm your action.',
              'type': 'confirm',
          },
      },
++    # [DFO progress patch] Helper for the Retrieve Predictions progress dialog. The action ID
++    # is the function name, "selected_task_ids". 'hidden': True keeps it out of the Actions
++    # menu (get_all_actions() filters hidden actions), but it can still be called through
++    # POST /api/dm/actions?id=selected_task_ids. It needs the same permission as Retrieve
++    # Predictions, so only users who can retrieve predictions can call it.
 +    {
 +        'entry_point': selected_task_ids,
 +        'permission': all_permissions.predictions_any,
@@ -90,21 +130,44 @@ index 8f5b88e..d2ac538 100644
          'permission': all_permissions.tasks_delete,
 diff --git a/web/libs/datamanager/src/components/Common/ActionProgress/ActionProgress.jsx b/web/libs/datamanager/src/components/Common/ActionProgress/ActionProgress.jsx
 new file mode 100644
-index 0000000..416739d
+index 0000000..dbc4687
 --- /dev/null
 +++ b/web/libs/datamanager/src/components/Common/ActionProgress/ActionProgress.jsx
-@@ -0,0 +1,163 @@
+@@ -0,0 +1,237 @@
++/**
++ * [DFO progress patch] Progress dialog for Retrieve Predictions.
++ *
++ * Stock Label Studio sends every selected task to the ML backend in ONE request and
++ * shows a spinner until the whole request returns, so there is nothing to measure
++ * progress against. The patch splits the work into small batches (see
++ * invokeActionInBatches in stores/AppStore.js). This file is only the dialog that
++ * displays the progress. It does no network calls itself.
++ *
++ * How it fits together:
++ *   AppStore.invokeActionInBatches()
++ *     ├─ calls openActionProgress() once                → dialog appears ("preparing")
++ *     ├─ after each batch calls progress.update({...})  → bar and counts move
++ *     ├─ checks progress.isStopRequested() before each  → Stop button ends the loop
++ *     └─ finally calls progress.update({phase: "done"}) → footer switches to Close
++ *
++ * Phases, in order: preparing → running (→ stopping) → done | stopped | failed
++ *
++ * The dialog can't be dismissed with Esc or by clicking outside while it runs. The
++ * only way out is Stop, which lets the current batch finish (a request already sent to
++ * the server can't be recalled) and then ends the loop.
++ */
 +import { Button } from "@humansignal/ui";
 +import { Modal } from "../Modal/Modal";
 +
-+/**
-+ * Progress dialog for Data Manager actions that run in batches (Retrieve Predictions).
-+ *
-+ * The dialog can't be closed while the action runs; the only way out is Stop, which
-+ * lets the current batch finish and then stops. When the run ends the footer switches
-+ * to a single Close button.
-+ */
++/** Phases in which the run is over and the dialog shows a Close button. */
++const FINISHED_PHASES = ["done", "stopped", "failed"];
 +
++/**
++ * Format milliseconds as "12 s" or "3 min 5 s".
++ *
++ * @param {number} ms Duration in milliseconds.
++ * @returns {string} Readable duration, or "–" if it can't be computed.
++ */
 +const formatDuration = (ms) => {
 +  if (!Number.isFinite(ms) || ms < 0) return "–";
 +  const totalSeconds = Math.round(ms / 1000);
@@ -113,6 +176,12 @@ index 0000000..416739d
 +  return minutes > 0 ? `${minutes} min ${seconds} s` : `${seconds} s`;
 +};
 +
++/**
++ * One number with a caption underneath, e.g. "12 / New predictions".
++ *
++ * @param {{ label: string, value: number, className?: string }} props
++ *   className colours the number (green for new predictions, red for missing ones).
++ */
 +const Stat = ({ label, value, className = "" }) => (
 +  <div className="flex flex-col">
 +    <span className={`text-lg font-semibold ${className}`}>{value}</span>
@@ -120,12 +189,33 @@ index 0000000..416739d
 +  </div>
 +);
 +
++/**
++ * The dialog's contents: heading, bar, timings and counts.
++ *
++ * It is re-rendered from scratch on every update (see openActionProgress), so it only
++ * reads the state it is given and keeps none of its own.
++ *
++ * @param {{ state: object }} props
++ *   state.phase      current phase (see the file header)
++ *   state.done       tasks sent so far
++ *   state.total      tasks selected
++ *   state.predicted  predictions the model created in this run
++ *   state.skipped    tasks that already had a prediction from this model version
++ *   state.missing    tasks that still have no prediction (no boxes, or backend error)
++ *   state.startedAt  / state.finishedAt   timestamps for the elapsed time
++ *   state.message    error text to show, if any
++ */
 +const ProgressBody = ({ state }) => {
 +  const { phase, done, total, predicted, skipped, missing, startedAt, finishedAt, message } = state;
 +  const percent = total > 0 ? Math.round((done / total) * 100) : 0;
++
++  // Elapsed time stops counting once the run has finished
 +  const elapsed = (finishedAt ?? Date.now()) - startedAt;
-+  const rate = done > 0 ? elapsed / done : null;
-+  const remaining = rate && phase === "running" ? rate * (total - done) : null;
++
++  // Time left = average time per task so far × tasks remaining. Only shown while
++  // running, and only once at least one batch has finished (otherwise there's no rate).
++  const msPerTask = done > 0 ? elapsed / done : null;
++  const remaining = msPerTask && phase === "running" ? msPerTask * (total - done) : null;
 +
 +  const heading = {
 +    preparing: "Finding the selected tasks…",
@@ -136,12 +226,16 @@ index 0000000..416739d
 +    failed: "Retrieve Predictions failed.",
 +  }[phase];
 +
++  // Colour tokens come from Label Studio's design system (@humansignal/ui Tailwind config),
++  // so the bar matches the app in both light and dark themes
 +  const barColor = phase === "failed" ? "bg-negative-surface" : "bg-primary-surface";
 +
 +  return (
 +    <div className="flex flex-col gap-4" data-testid="action-progress">
 +      <div className="text-neutral-content">{heading}</div>
 +
++      {/* The bar: a grey track with a coloured fill whose width is the percent done.
++          role/aria attributes let screen readers announce the progress. */}
 +      <div
 +        className="w-full h-3 rounded-full overflow-hidden bg-neutral-border"
 +        role="progressbar"
@@ -163,6 +257,7 @@ index 0000000..416739d
 +        </span>
 +      </div>
 +
++      {/* Counts appear once the task list is known */}
 +      {phase !== "preparing" && (
 +        <div className="grid grid-cols-3 gap-4">
 +          <Stat label="New predictions" value={predicted} className="text-positive-content" />
@@ -171,6 +266,7 @@ index 0000000..416739d
 +        </div>
 +      )}
 +
++      {/* After the run, explain what "no prediction returned" means and how to retry */}
 +      {missing > 0 && phase !== "running" && (
 +        <div className="text-sm text-neutral-content-subtle">
 +          Tasks with no prediction either got no boxes above the score threshold, or the ML backend returned an error
@@ -185,13 +281,23 @@ index 0000000..416739d
 +};
 +
 +/**
-+ * Open the progress dialog.
++ * Open the progress dialog and return a small controller for it.
 + *
-+ * @param {{ title: string }} options
-+ * @returns {{ update: (patch: object) => void, isStopRequested: () => boolean }}
++ * Label Studio's Modal.modal() renders a dialog outside the React tree and returns an
++ * object with update(newProps) and close(). The dialog's state is kept in a plain
++ * object here, and every update() re-renders the body and footer from it. That keeps
++ * this independent of MobX, which the calling store uses.
++ *
++ * @param {{ title: string }} options  Dialog title, e.g. "Retrieve Predictions".
++ * @returns {{
++ *   update: (patch: object) => void,   merge fields into the state and re-render
++ *   isStopRequested: () => boolean     true once the user has clicked Stop
++ * }}
 + */
 +export const openActionProgress = ({ title }) => {
++  // Set by the Stop button and read by the batch loop in AppStore before each batch
 +  let stopRequested = false;
++
 +  const state = {
 +    phase: "preparing",
 +    done: 0,
@@ -204,10 +310,9 @@ index 0000000..416739d
 +    message: null,
 +  };
 +
++  /** Footer buttons: Stop while running, Close once finished. */
 +  const footer = () => {
-+    const finished = ["done", "stopped", "failed"].includes(state.phase);
-+
-+    if (finished) {
++    if (FINISHED_PHASES.includes(state.phase)) {
 +      return (
 +        <div className="flex justify-end">
 +          <Button onClick={() => modal.close()} data-testid="action-progress-close">
@@ -222,7 +327,7 @@ index 0000000..416739d
 +        <Button
 +          look="outlined"
 +          variant="neutral"
-+          disabled={stopRequested}
++          disabled={stopRequested} // one click is enough; the loop stops after the current batch
 +          onClick={() => {
 +            stopRequested = true;
 +            update({ phase: "stopping" });
@@ -235,6 +340,8 @@ index 0000000..416739d
 +    );
 +  };
 +
++  // allowClose / closeOnClickOutside = false: the run can only be ended with Stop, so the
++  // user can't hide the dialog and lose track of a run that is still going
 +  const modal = Modal.modal({
 +    title,
 +    body: <ProgressBody state={{ ...state }} />,
@@ -244,11 +351,18 @@ index 0000000..416739d
 +    width: 560,
 +  });
 +
++  /**
++   * Merge new values into the state and redraw the dialog.
++   *
++   * @param {object} patch  Any of the state fields, e.g. { done: 20, predicted: 18 }.
++   */
 +  const update = (patch) => {
 +    Object.assign(state, patch);
-+    if (["done", "stopped", "failed"].includes(state.phase) && !state.finishedAt) {
++    // Freeze the elapsed time the first time the run reaches a finished phase
++    if (FINISHED_PHASES.includes(state.phase) && !state.finishedAt) {
 +      state.finishedAt = Date.now();
 +    }
++    // Pass a copy so React sees new props and re-renders
 +    modal.update({ body: <ProgressBody state={{ ...state }} />, footer: footer() });
 +  };
 +
@@ -258,24 +372,32 @@ index 0000000..416739d
 +  };
 +};
 diff --git a/web/libs/datamanager/src/stores/AppStore.js b/web/libs/datamanager/src/stores/AppStore.js
-index 1f9b5a8..0d0f42b 100644
+index 1f9b5a8..2b1fa6f 100644
 --- a/web/libs/datamanager/src/stores/AppStore.js
 +++ b/web/libs/datamanager/src/stores/AppStore.js
-@@ -1,6 +1,7 @@
+@@ -1,6 +1,8 @@
  import { destroy, flow, types } from "mobx-state-tree";
  import { runInAction } from "mobx";
  import { Modal } from "../components/Common/Modal/Modal";
++// [DFO progress patch] progress dialog for batched actions (Retrieve Predictions)
 +import { openActionProgress } from "../components/Common/ActionProgress/ActionProgress";
  import { FF_DEV_2887, FF_DISABLE_GLOBAL_USER_FETCHING, FF_LOPS_E_3, isFF } from "../utils/feature-flags";
  import { History } from "../utils/history";
  import { isDefined } from "../utils/utils";
-@@ -19,6 +20,14 @@ let networkActivity = null;
+@@ -19,6 +21,21 @@ let networkActivity = null;
  
  const PROJECTS_FETCH_PERIOD = 20 * 1000; // interaction timer for 20 sec fetch period for project api
  
 +/**
-+ * Actions that run a batch of tasks at a time with a progress dialog
-+ * instead of one request for the whole selection.
++ * [DFO progress patch] Actions that run a batch of tasks at a time with a progress
++ * dialog, instead of one request for the whole selection.
++ *
++ * Keys are server action IDs (the Python entry point's function name in
++ * label_studio/data_manager/actions/). Any action listed here goes through
++ * invokeActionInBatches() below; every other action keeps the stock behaviour.
++ *
++ * batchSize: tasks per request. 10 keeps each request short (well under the server's
++ * request timeout even for a slow model) while adding little overhead per request.
 + */
 +const BATCHED_ACTIONS = {
 +  retrieve_tasks_predictions: { title: "Retrieve Predictions", batchSize: 10 },
@@ -284,10 +406,15 @@ index 1f9b5a8..0d0f42b 100644
  export const AppStore = types
    .model("AppStore", {
      mode: types.optional(types.enumeration(["explorer", "labelstream", "labeling"]), "explorer"),
-@@ -770,6 +779,23 @@ export const AppStore = types
+@@ -770,6 +787,28 @@ export const AppStore = types
          Object.assign(actionParams, options.body);
        }
  
++      // [DFO progress patch] Batched actions (Retrieve Predictions) take a different path
++      // from here: instead of one request for the whole selection, run them in batches
++      // with a progress dialog. Afterwards, do the same clean-up as the stock path below
++      // (refresh the table and project counts, clear the selection, unlock the view) and
++      // fire the same SDK event, so the rest of Label Studio can't tell the difference.
 +      if (BATCHED_ACTIONS[actionId]) {
 +        const result = yield self.invokeActionInBatches(actionId, requestParams, actionParams, options);
 +
@@ -308,28 +435,50 @@ index 1f9b5a8..0d0f42b 100644
        const result = yield self.apiCall("invokeAction", requestParams, {
          body: actionParams,
        });
-@@ -805,6 +831,89 @@ export const AppStore = types
+@@ -805,6 +844,132 @@ export const AppStore = types
        return result;
      }),
  
 +    /**
-+     * Run an action on the selected tasks a batch at a time, with a progress dialog.
++     * [DFO progress patch] Run an action on the selected tasks a batch at a time, with a
++     * progress dialog. This is what turns Retrieve Predictions into a progress bar.
 +     *
-+     * 1. Ask the server for the IDs of the selected tasks (the hidden
-+     *    "selected_task_ids" action), so "select all", filters and exclusions are
-+     *    resolved exactly as for the normal action.
-+     * 2. Send the action for BATCH_SIZE tasks at a time and update the dialog after each.
++     * Why batching is needed: in stock Label Studio the browser sends ONE request,
++     * "POST /api/dm/actions?id=retrieve_tasks_predictions", with the selection. The server
++     * sends every selected task to the ML backend and answers only when all are done, so
++     * the page can only show a spinner. Large selections can also hit the request timeout.
 +     *
-+     * Small requests also avoid the gateway timeout that one large request can hit.
++     * What this does instead:
++     *   1. Ask the server for the IDs of the selected tasks, using the hidden
++     *      "selected_task_ids" action added to label_studio/data_manager/actions/basic.py.
++     *      It receives the same selection payload (select-all, filters, exclusions), so
++     *      it resolves exactly the tasks the stock action would have processed.
++     *   2. Call the normal, unchanged action endpoint with batchSize task IDs at a time.
++     *      Each call returns when that batch is predicted, and the dialog is updated.
++     *   3. Each response includes "created" and "with_predictions" (also added in
++     *      basic.py). They split the batch into new / already predicted / missing.
++     *
++     * The server still does the actual work (calling the ML backend and saving
++     * predictions) exactly as before. Only the size of each request changes.
++     *
++     * @param {string} actionId        e.g. "retrieve_tasks_predictions"
++     * @param {object} requestParams   query params from invokeAction (id, tabID)
++     * @param {object} actionParams    request body from invokeAction (selectedItems, filters, ordering)
++     * @param {object} options         invokeAction options; options.body holds any dialog form values
++     * @returns {object} Summary in the same shape as an action response, plus the counts.
 +     */
 +    invokeActionInBatches: flow(function* (actionId, requestParams, actionParams, options = {}) {
 +      const { title, batchSize } = BATCHED_ACTIONS[actionId];
 +      const progress = openActionProgress({ title });
-+      // Keep the error handled here instead of the global error popup
++
++      // apiCall() normally shows Label Studio's global error popup on a failed request.
++      // Returning true from errorHandler suppresses it, so a failed batch is reported in
++      // the progress dialog and the loop carries on with the next batch.
 +      const quiet = { errorHandler: () => true };
 +      const errorText = (res) =>
 +        res?.response?.detail ?? res?.response?.message ?? res?.message ?? "The server returned an error.";
 +
++      // Step 1: resolve the selection to task IDs (same body as the stock request)
 +      const idsResult = yield self.apiCall(
 +        "invokeAction",
 +        { ...requestParams, id: "selected_task_ids" },
@@ -337,20 +486,30 @@ index 1f9b5a8..0d0f42b 100644
 +        quiet,
 +      );
 +
++      // No task list (request failed, or the server lacks the patched basic.py and so
++      // doesn't know "selected_task_ids"): show the error in the dialog and stop here
 +      if (!idsResult || idsResult.error || !Array.isArray(idsResult.task_ids)) {
 +        progress.update({ phase: "failed", message: errorText(idsResult) });
 +        return idsResult;
 +      }
 +
 +      const taskIds = idsResult.task_ids;
++      // Running totals shown in the dialog (see ProgressBody in ActionProgress.jsx)
 +      const totals = { done: 0, total: taskIds.length, predicted: 0, skipped: 0, missing: 0 };
 +
 +      progress.update({ phase: "running", ...totals });
 +
++      // Step 2: one request per batch. "yield" waits for each request to finish before
++      // sending the next, so batches run one after another and the server isn't flooded.
 +      for (let i = 0; i < taskIds.length; i += batchSize) {
++        // Stop button: checked between batches, because a sent request can't be recalled
 +        if (progress.isStopRequested()) break;
 +
 +        const batch = taskIds.slice(i, i + batchSize);
++
++        // The stock action endpoint, with the selection narrowed to just this batch.
++        // filters/ordering are cleared and no tabID is sent: the IDs are already
++        // resolved, and a filter or saved tab must not narrow them again.
 +        const res = yield self.apiCall(
 +          "invokeAction",
 +          { id: actionId },
@@ -367,13 +526,21 @@ index 1f9b5a8..0d0f42b 100644
 +
 +        totals.done += batch.length;
 +
++        // The request itself failed (e.g. server error or network drop): count the whole
++        // batch as missing, show the error, and carry on with the next batch
 +        if (!res || res.error) {
 +          totals.missing += batch.length;
 +          progress.update({ ...totals, message: `A batch failed: ${errorText(res)}` });
 +          continue;
 +        }
 +
-+        // Older servers don't return the counts; treat the whole batch as predicted
++        // Step 3: split the batch using the counts the patched server returns.
++        //   created          = predictions saved by this request
++        //   with_predictions = tasks in the batch that now have a prediction from the
++        //                      current model version (new ones + ones that already had one)
++        // So: skipped = with_predictions - created, missing = batch - with_predictions.
++        // A server without the patched basic.py doesn't return the counts; then the whole
++        // batch is treated as predicted, which matches what stock Label Studio reports.
 +        const created = res.created ?? batch.length;
 +        const withPredictions = res.with_predictions ?? batch.length;
 +
@@ -384,10 +551,13 @@ index 1f9b5a8..0d0f42b 100644
 +        progress.update({ ...totals, phase: progress.isStopRequested() ? "stopping" : "running" });
 +      }
 +
++      // If Stop was clicked during the last batch, everything was still sent: report "done"
 +      const stopped = progress.isStopRequested() && totals.done < totals.total;
 +
 +      progress.update({ ...totals, phase: stopped ? "stopped" : "done" });
 +
++      // Same shape as a stock action response, so SDK listeners of
++      // actionDialogOkComplete receive what they expect
 +      return {
 +        processed_items: totals.done,
 +        detail: `Sent ${totals.done} of ${totals.total} tasks to the model`,

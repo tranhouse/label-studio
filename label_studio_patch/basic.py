@@ -24,9 +24,22 @@ logger = logging.getLogger(__name__)
 def retrieve_tasks_predictions(project, queryset, **kwargs):
     """Retrieve predictions by tasks ids
 
+    Sends the tasks to the project's ML backend, which runs the model and returns
+    predictions. Label Studio saves them on the tasks.
+
+    [DFO progress patch] The web page now calls this for 10 tasks at a time (see
+    invokeActionInBatches in web/libs/datamanager/src/stores/AppStore.js) instead of once
+    for the whole selection. The response also gains "created", "with_predictions" and
+    "model_version", which the progress dialog uses. "processed_items" and "detail" are
+    unchanged, so existing API users are not affected.
+
     :param project: project instance
     :param queryset: filtered tasks db queryset
     """
+    # evaluate_predictions() -> MLBackend.predict_tasks(). Its return value says what
+    # happened: a list of the Prediction objects it saved, the model version string if
+    # every task already had a prediction from that version, or None if the backend
+    # isn't ready. Stock Label Studio ignored it.
     result = evaluate_predictions(queryset)
     count = queryset.count()
     response = {'processed_items': count, 'detail': 'Retrieved ' + str(count) + ' predictions'}
@@ -35,20 +48,34 @@ def retrieve_tasks_predictions(project, queryset, **kwargs):
 
 
 def _prediction_counts(project, queryset, result):
-    """Report what Retrieve Predictions actually did, so the progress dialog can show it.
+    """[DFO progress patch] Report what Retrieve Predictions actually did.
 
-    predict_tasks() skips tasks that already have a prediction from the current model
-    version, and when the ML backend errors it logs the error and saves nothing. Counting
-    afterwards tells those cases apart:
+    Stock Label Studio answers "Retrieved N predictions" whatever happened:
+    predict_tasks() silently skips tasks that already have a prediction from the current
+    model version, and when the ML backend errors it logs the error and saves nothing.
+    Counting afterwards tells those cases apart:
 
     * created: predictions saved by this call
     * with_predictions: tasks that now have a prediction from the current model version
-      (includes ones skipped because they already had one)
+      (new ones plus ones that were skipped because they already had one)
+
+    The web page derives: skipped = with_predictions - created, and
+    missing = tasks sent - with_predictions (no boxes above the threshold, or a backend error).
+
+    :param project: project instance
+    :param queryset: the tasks that were sent to the ML backend
+    :param result: what evaluate_predictions() returned (see retrieve_tasks_predictions)
+    :return: dict with created, with_predictions and model_version
     """
+    # A fresh query, so model_version is the one predict_tasks() just saved
     backend = project.ml_backend
     if not backend:
         return {'created': 0, 'with_predictions': 0, 'model_version': None}
+
+    # Only a list means predictions were saved; a string or None means none were
     created = len(result) if isinstance(result, list) else 0
+
+    # distinct(): the join on predictions would otherwise count a task once per prediction
     with_predictions = (
         Task.objects.filter(id__in=queryset.values('id'), predictions__model_version=backend.model_version)
         .distinct()
@@ -65,6 +92,9 @@ def selected_task_ids(project, queryset, **kwargs):
     tasks to the ML backend in small batches so it can show progress and avoid the
     request timeout that one large Retrieve Predictions call can hit.
     """
+    # The queryset arrives already filtered by ProjectActionsAPI.post() from the request
+    # body (selectedItems, filters), the same way as for every other action. Sorting by
+    # ID makes batches go down the table in a stable order.
     task_ids = list(queryset.order_by('id').values_list('id', flat=True))
     return {'task_ids': task_ids, 'total': len(task_ids)}
 
@@ -217,12 +247,19 @@ actions: list[DataManagerAction] = [
         'order': 90,
         'dialog': {
             'title': 'Retrieve Predictions',
+            # [DFO progress patch] The stock text warned about timeouts and suggested the API
+            # instead; batching removes that problem, so the text describes the progress bar.
             'text': 'Send the selected tasks to the ML backend connected to the project. '
             'Tasks are sent in small batches and a progress bar shows how many are done. '
             'Please confirm your action.',
             'type': 'confirm',
         },
     },
+    # [DFO progress patch] Helper for the Retrieve Predictions progress dialog. The action ID
+    # is the function name, "selected_task_ids". 'hidden': True keeps it out of the Actions
+    # menu (get_all_actions() filters hidden actions), but it can still be called through
+    # POST /api/dm/actions?id=selected_task_ids. It needs the same permission as Retrieve
+    # Predictions, so only users who can retrieve predictions can call it.
     {
         'entry_point': selected_task_ids,
         'permission': all_permissions.predictions_any,
