@@ -1,4 +1,4 @@
-From 6e48510f7ae1012416093607f8b88574ee35720c Mon Sep 17 00:00:00 2001
+From 608e50b67ff769117c8a16cb970a9f3fdfe3e5de Mon Sep 17 00:00:00 2001
 From: tranhouse <4tan.tran@gmail.com>
 Date: Sat, 31 Oct 2026 09:02:59 -0400
 Subject: [PATCH] Retrieve Predictions: run in batches with a progress dialog
@@ -7,9 +7,9 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_018ZBdghcp7P7mVhGKYxPuHk
 ---
  label_studio/data_manager/actions/basic.py    |  54 +++++-
- .../Common/ActionProgress/ActionProgress.jsx  | 167 ++++++++++++++++++
+ .../Common/ActionProgress/ActionProgress.jsx  | 163 ++++++++++++++++++
  web/libs/datamanager/src/stores/AppStore.js   | 109 ++++++++++++
- 3 files changed, 325 insertions(+), 5 deletions(-)
+ 3 files changed, 321 insertions(+), 5 deletions(-)
  create mode 100644 web/libs/datamanager/src/components/Common/ActionProgress/ActionProgress.jsx
 
 diff --git a/label_studio/data_manager/actions/basic.py b/label_studio/data_manager/actions/basic.py
@@ -90,10 +90,10 @@ index 8f5b88e..d2ac538 100644
          'permission': all_permissions.tasks_delete,
 diff --git a/web/libs/datamanager/src/components/Common/ActionProgress/ActionProgress.jsx b/web/libs/datamanager/src/components/Common/ActionProgress/ActionProgress.jsx
 new file mode 100644
-index 0000000..11ba8f7
+index 0000000..416739d
 --- /dev/null
 +++ b/web/libs/datamanager/src/components/Common/ActionProgress/ActionProgress.jsx
-@@ -0,0 +1,167 @@
+@@ -0,0 +1,163 @@
 +import { Button } from "@humansignal/ui";
 +import { Modal } from "../Modal/Modal";
 +
@@ -136,14 +136,14 @@ index 0000000..11ba8f7
 +    failed: "Retrieve Predictions failed.",
 +  }[phase];
 +
-+  const barColor = phase === "failed" ? "bg-negative-background" : "bg-primary-emphasis";
++  const barColor = phase === "failed" ? "bg-negative-surface" : "bg-primary-surface";
 +
 +  return (
 +    <div className="flex flex-col gap-4" data-testid="action-progress">
 +      <div className="text-neutral-content">{heading}</div>
 +
 +      <div
-+        className="w-full h-3 rounded-full overflow-hidden bg-neutral-surface-bold"
++        className="w-full h-3 rounded-full overflow-hidden bg-neutral-border"
 +        role="progressbar"
 +        aria-valuemin={0}
 +        aria-valuemax={100}
@@ -167,19 +167,15 @@ index 0000000..11ba8f7
 +        <div className="grid grid-cols-3 gap-4">
 +          <Stat label="New predictions" value={predicted} className="text-positive-content" />
 +          <Stat label="Already predicted (skipped)" value={skipped} />
-+          <Stat
-+            label="No prediction returned"
-+            value={missing}
-+            className={missing > 0 ? "text-negative-content" : ""}
-+          />
++          <Stat label="No prediction returned" value={missing} className={missing > 0 ? "text-negative-content" : ""} />
 +        </div>
 +      )}
 +
 +      {missing > 0 && phase !== "running" && (
 +        <div className="text-sm text-neutral-content-subtle">
-+          Tasks with no prediction either got no boxes above the score threshold, or the ML backend
-+          returned an error (check its log). Run Retrieve Predictions again to retry them; tasks that
-+          already have predictions are skipped.
++          Tasks with no prediction either got no boxes above the score threshold, or the ML backend returned an error
++          (check its log). Run Retrieve Predictions again to retry them; tasks that already have predictions are
++          skipped.
 +        </div>
 +      )}
 +

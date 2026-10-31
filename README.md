@@ -36,6 +36,7 @@ Raw images -> split 70/15/15 -> SAHI slicing (640 px tiles) -> annotate train/va
 | `03_upload_tiles.py` | 3, 8 | Creates a project and labeling config, uploads tiles through the REST API |
 | `05_export_to_yolo.py` | 5 | Converts Label Studio annotations to `yolo_dataset/` (images, labels, `data.yaml`) |
 | `06_train_yolo.py` | 6 | Trains YOLO, prints the `best.pt` path, can copy it into the backend |
+| `label_studio_patch/` | 8 | Patch for Label Studio 1.23.2 that adds a progress bar to Actions > Retrieve Predictions (see its README) |
 | `ls_auth.py` | - | Shared Label Studio authentication (Personal Access Token or legacy token) |
 | `yolo_ml_backend/` | 7 | Label Studio YOLO ML backend |
 | `trained_model/` | - | Earlier DIV2K model (Car / Person / Ship), kept for reference |
