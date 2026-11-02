@@ -172,6 +172,8 @@ def to_yolo_box(value):
     cx, cy = value["x"] / 100 + w / 2, value["y"] / 100 + h / 2
 
     def clamp(t):
+        """Keep a value inside 0-1: boxes drawn slightly past the tile edge would
+        otherwise give YOLO coordinates outside the image, which YOLO rejects."""
         return min(max(t, 0.0), 1.0)
 
     return clamp(cx), clamp(cy), clamp(w), clamp(h)

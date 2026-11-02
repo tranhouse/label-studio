@@ -36,6 +36,8 @@ Raw images -> split 70/15/15 -> SAHI slicing (640 px tiles) -> annotate train/va
 | `03_upload_tiles.py` | 3, 8 | Creates a project and labeling config, uploads tiles through the REST API |
 | `05_export_to_yolo.py` | 5 | Converts Label Studio annotations to `yolo_dataset/` (images, labels, `data.yaml`) |
 | `06_train_yolo.py` | 6 | Trains YOLO, prints the `best.pt` path, can copy it into the backend |
+| `07_retrieve_predictions.py` | 8 | Gets predictions from the ML backend for a project, with a progress bar in the terminal |
+| `label_studio_patch/` | Setup, 8 | Optional patch for Label Studio 1.23.2: a progress bar in the browser for Actions > Retrieve Predictions (see its README) |
 | `ls_auth.py` | - | Shared Label Studio authentication (Personal Access Token or legacy token) |
 | `yolo_ml_backend/` | 7 | Label Studio YOLO ML backend |
 | `trained_model/` | - | Earlier DIV2K model (Car / Person / Ship), kept for reference |
@@ -75,10 +77,11 @@ Set it again in every new window.
 cd <path-to-repo>
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-python -m pip install label-studio ultralytics sahi requests pillow
+python -m pip install label-studio==1.23.2 ultralytics sahi requests pillow
 ```
 
-The prompt starts with `(.venv)` when the environment is active. If a script fails with
+Label Studio is pinned to 1.23.2 because the optional progress-bar patch (below) is built
+for that version. The prompt starts with `(.venv)` when the environment is active. If a script fails with
 `ModuleNotFoundError`, the environment isn't active in that window. Activate it and rerun.
 
 ### Start Label Studio (window 1)
@@ -86,10 +89,35 @@ The prompt starts with `(.venv)` when the environment is active. If a script fai
 ```powershell
 cd <path-to-repo>
 .\.venv\Scripts\Activate.ps1
+$env:ML_BLOCK_LOCAL_IP = 'false'
+$env:SSRF_PROTECTION_ENABLED = 'false'
 label-studio start
 ```
 
 It opens at `http://localhost:8080`. Sign up; the account is local to your PC.
+
+The two `$env:` lines let Label Studio connect to the ML backend on the same PC
+(`http://localhost:9090`, step 7). Without them, Label Studio 1.23.2 refuses with "URL
+resolves to a reserved network address". Set them every time you start Label Studio in a
+new window. They aren't needed on a server whose backend runs on another machine.
+
+### Optional: progress bar for Retrieve Predictions
+
+Stock Label Studio shows only a spinner while **Actions > Retrieve Predictions** runs.
+`label_studio_patch/` adds a progress dialog: a bar, time left, counts of new / skipped /
+failed predictions, and a Stop button. Install it once, with Label Studio stopped
+(Ctrl+C in window 1):
+
+```powershell
+cd <path-to-repo>
+.\.venv\Scripts\Activate.ps1
+python label_studio_patch/install_patch.py
+```
+
+Then start Label Studio again as above and refresh the browser with **Ctrl+F5**.
+`python label_studio_patch/install_patch.py --undo` restores stock Label Studio. Run the
+install again after any `pip install` that reinstalls Label Studio.
+`label_studio_patch/README.md` has the details.
 
 ### Get your token
 
@@ -275,8 +303,42 @@ Then in Label Studio, in the test project:
 
 1. **Settings > Model > Connect Model.** Enter a name (for example `YOLO pilot`) and the
    backend URL `http://localhost:9090`, then click **Validate and Save**.
-2. In the Data Manager, tick the box at the top to select all tasks, then choose
-   **Actions > Retrieve Predictions**.
+2. Get the predictions: the backend runs `best.pt` on each tile and returns boxes. Use
+   one of these. All three produce the same predictions.
+
+   | Option | Where the progress shows | Needs |
+   |---|---|---|
+   | A. Browser, with the patch (recommended) | Progress dialog in Label Studio | Patch installed (Setup) |
+   | B. Script | Progress bar in window 2 | Nothing extra |
+   | C. Browser, stock Label Studio | Spinner only | Nothing extra |
+
+   **A. Browser, with the patch.** In the Data Manager, tick the box at the top to select
+   all tasks, then choose **Actions > Retrieve Predictions > OK**. A dialog shows a bar
+   that fills 10 tiles at a time, time left, and three counts:
+
+   - **New predictions**: tiles the model just predicted
+   - **Already predicted (skipped)**: tiles that already had predictions from this model
+   - **No prediction returned**: tiles with no boxes above the score threshold, or a
+     backend error (check window 3)
+
+   **Stop** finishes the current batch and stops. Click **Close** when it's done; the
+   table refreshes. To continue after stopping, or to retry tiles with no prediction, run
+   it again on the same selection. Tiles that already have predictions are skipped.
+
+   **B. Script.** In window 2:
+
+   ```powershell
+   python 07_retrieve_predictions.py --url http://localhost:8080 --project-id <ID>
+   ```
+
+   It runs the same action 10 tiles at a time and shows tiles done, speed and time left
+   in the terminal. At the end it reports how many tiles got predictions. If it stops
+   partway, rerun the same command; finished tiles are skipped. The Label Studio page
+   shows nothing until you refresh it.
+
+   **C. Browser, stock Label Studio.** Same clicks as A, but it shows only a spinner until
+   every tile is done, and large selections can time out. Use A or B for more than a few
+   dozen tiles.
 3. Open each tile. Predicted boxes appear as pre-annotations. Correct or delete the wrong
    ones, add any missed, and submit.
 
@@ -291,6 +353,11 @@ is rarely confident enough to pass the 0.25 threshold. To confirm the connection
 temporarily set `model_score_threshold="0.01"` in **Settings > Labeling Interface > Code**,
 save, and retrieve predictions again.
 
+Retrieve Predictions skips tiles that already have a prediction from the current model,
+so lowering the threshold doesn't re-predict them. First select the tiles and use
+**Actions > Delete Predictions**, or restart the backend with a new `best.pt`, which
+changes the model version.
+
 ---
 
 ## After the pilot
@@ -302,6 +369,10 @@ save, and retrieve predictions again.
 
 On the DFO server, `http://localhost:9090` will not work as the backend URL: Label Studio
 sends requests from the server, so the backend must be reachable from there.
+
+The progress dialog (option A in step 8) appears on the DFO server only after the server's
+maintainers install `label_studio_patch/` there. The server must run Label Studio 1.23.2.
+Until then, use option B with `--url` pointing at the server.
 
 ## Keep class names consistent
 
@@ -324,6 +395,10 @@ anything that doesn't match.
 | `docker` is not recognized | Docker isn't installed; use the Python option in step 7 |
 | pip conflict on `numpy<2` while installing the backend | `yolo_ml_backend/requirements.txt` must contain `numpy>=2.2` (already fixed in this repo) |
 | Validate and Save fails | Check the backend window is running and `http://localhost:9090/health` returns `UP` |
+| Validate and Save says "URL resolves to a reserved network address" | Label Studio was started without the two `$env:` lines in Setup > Start Label Studio. Stop it (Ctrl+C), set them in that window, and start it again |
+| No progress dialog after installing the patch | Restart Label Studio and refresh the page with **Ctrl+F5**. If it's still missing, check `python -m pip show label-studio` says 1.23.2 and run `install_patch.py` again (a `pip install` may have replaced the patched files) |
+| `install_patch.py` says another version is installed | `python -m pip install label-studio==1.23.2`, then run it again |
+| Fewer tasks than tiles after `03_upload_tiles.py` | Older copies of the script sent every tile under the same field name, and Label Studio kept only one per batch. Pull the latest script, delete the project's tasks and upload again |
 | 401 / 403 errors in the backend window | The backend can't download tiles; set `LABEL_STUDIO_API_KEY` to the legacy token and restart it |
 | Retrieve Predictions returns no boxes | Lower `model_score_threshold`, and check that the label names match the model's classes |
 
