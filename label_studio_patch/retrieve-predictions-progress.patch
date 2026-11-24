@@ -1,19 +1,22 @@
-From 9eeda8be17b244035c35d9999fcc85da559085a5 Mon Sep 17 00:00:00 2001
-From: tranhouse <4tan.tran@gmail.com>
-Date: Sat, 31 Oct 2026 09:02:59 -0400
-Subject: [PATCH] Retrieve Predictions: run in batches with a progress dialog
+From 2e1aaa98f60fb048272048cc925414114f47e32b Mon Sep 17 00:00:00 2001
+From: tranhouse <noreply@users.noreply.github.com>
+Date: Tue, 24 Nov 2026 10:57:35 -0500
+Subject: [PATCH] Retrieve Predictions: send tasks one at a time with a
+ progress dialog
 
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_018ZBdghcp7P7mVhGKYxPuHk
+[DFO progress patch] Adds a progress dialog to Data Manager > Actions >
+Retrieve Predictions: tasks are sent to the ML backend one per request,
+the bar and counts update after each task, and the elapsed time and time
+left update every second.
 ---
- label_studio/data_manager/actions/basic.py    |  91 ++++++-
- .../Common/ActionProgress/ActionProgress.jsx  | 237 ++++++++++++++++++
- web/libs/datamanager/src/stores/AppStore.js   | 165 ++++++++++++
- 3 files changed, 488 insertions(+), 5 deletions(-)
+ label_studio/data_manager/actions/basic.py    |  92 +++++-
+ .../Common/ActionProgress/ActionProgress.jsx  | 298 ++++++++++++++++++
+ web/libs/datamanager/src/stores/AppStore.js   | 167 ++++++++++
+ 3 files changed, 552 insertions(+), 5 deletions(-)
  create mode 100644 web/libs/datamanager/src/components/Common/ActionProgress/ActionProgress.jsx
 
 diff --git a/label_studio/data_manager/actions/basic.py b/label_studio/data_manager/actions/basic.py
-index 8f5b88e..d0269b9 100644
+index 8f5b88e..5fdfdbd 100644
 --- a/label_studio/data_manager/actions/basic.py
 +++ b/label_studio/data_manager/actions/basic.py
 @@ -24,11 +24,79 @@ logger = logging.getLogger(__name__)
@@ -87,18 +90,18 @@ index 8f5b88e..d0269b9 100644
 +
 +    Hidden helper used by the Retrieve Predictions progress dialog: it resolves the
 +    selection (including "select all" with filters and exclusions) once, then sends the
-+    tasks to the ML backend in small batches so it can show progress and avoid the
++    tasks to the ML backend one at a time so it can show progress and avoid the
 +    request timeout that one large Retrieve Predictions call can hit.
 +    """
 +    # The queryset arrives already filtered by ProjectActionsAPI.post() from the request
 +    # body (selectedItems, filters), the same way as for every other action. Sorting by
-+    # ID makes batches go down the table in a stable order.
++    # ID makes the tasks go down the table in a stable order.
 +    task_ids = list(queryset.order_by('id').values_list('id', flat=True))
 +    return {'task_ids': task_ids, 'total': len(task_ids)}
  
  
  def delete_tasks(project, queryset, **kwargs):
-@@ -179,13 +247,26 @@ actions: list[DataManagerAction] = [
+@@ -179,13 +247,27 @@ actions: list[DataManagerAction] = [
          'order': 90,
          'dialog': {
              'title': 'Retrieve Predictions',
@@ -106,9 +109,10 @@ index 8f5b88e..d0269b9 100644
 -            'This operation might be abruptly interrupted due to a timeout. '
 -            'The recommended way to get predictions is to update tasks using the Label Studio API.'
 +            # [DFO progress patch] The stock text warned about timeouts and suggested the API
-+            # instead; batching removes that problem, so the text describes the progress bar.
++            # instead; sending tasks one at a time removes that problem, so the text describes
++            # the progress bar.
 +            'text': 'Send the selected tasks to the ML backend connected to the project. '
-+            'Tasks are sent in small batches and a progress bar shows how many are done. '
++            'Tasks are sent one at a time and a progress bar shows how many are done. '
              'Please confirm your action.',
              'type': 'confirm',
          },
@@ -130,30 +134,32 @@ index 8f5b88e..d0269b9 100644
          'permission': all_permissions.tasks_delete,
 diff --git a/web/libs/datamanager/src/components/Common/ActionProgress/ActionProgress.jsx b/web/libs/datamanager/src/components/Common/ActionProgress/ActionProgress.jsx
 new file mode 100644
-index 0000000..dbc4687
+index 0000000..931c0b8
 --- /dev/null
 +++ b/web/libs/datamanager/src/components/Common/ActionProgress/ActionProgress.jsx
-@@ -0,0 +1,237 @@
+@@ -0,0 +1,298 @@
 +/**
 + * [DFO progress patch] Progress dialog for Retrieve Predictions.
 + *
 + * Stock Label Studio sends every selected task to the ML backend in ONE request and
 + * shows a spinner until the whole request returns, so there is nothing to measure
-+ * progress against. The patch splits the work into small batches (see
++ * progress against. The patch sends the tasks one at a time instead (see
 + * invokeActionInBatches in stores/AppStore.js). This file is only the dialog that
 + * displays the progress. It does no network calls itself.
 + *
 + * How it fits together:
 + *   AppStore.invokeActionInBatches()
 + *     ├─ calls openActionProgress() once                → dialog appears ("preparing")
-+ *     ├─ after each batch calls progress.update({...})  → bar and counts move
++ *     ├─ after each task calls progress.update({...})   → bar and counts move
 + *     ├─ checks progress.isStopRequested() before each  → Stop button ends the loop
 + *     └─ finally calls progress.update({phase: "done"}) → footer switches to Close
++ *   A one-second timer in openActionProgress redraws the dialog in between, so the
++ *   elapsed time and time left keep counting while a task is being predicted.
 + *
 + * Phases, in order: preparing → running (→ stopping) → done | stopped | failed
 + *
 + * The dialog can't be dismissed with Esc or by clicking outside while it runs. The
-+ * only way out is Stop, which lets the current batch finish (a request already sent to
++ * only way out is Stop, which lets the current task finish (a request already sent to
 + * the server can't be recalled) and then ends the loop.
 + */
 +import { Button } from "@humansignal/ui";
@@ -161,6 +167,9 @@ index 0000000..dbc4687
 +
 +/** Phases in which the run is over and the dialog shows a Close button. */
 +const FINISHED_PHASES = ["done", "stopped", "failed"];
++
++/** How often the timer redraws the elapsed time and time left, in milliseconds. */
++const TICK_MS = 1000;
 +
 +/**
 + * Format milliseconds as "12 s" or "3 min 5 s".
@@ -190,41 +199,64 @@ index 0000000..dbc4687
 +);
 +
 +/**
++ * Work out the time left from the run so far.
++ *
++ * Uses the average time per finished task, measured up to the moment the last task
++ * finished, times the tasks still to do. The time already spent on the task in progress
++ * is then subtracted, so the estimate counts down smoothly between tasks instead of
++ * standing still. It never goes below 1 second while tasks remain.
++ *
++ * @param {object} state  Dialog state (see ProgressBody).
++ * @param {number} now    Current time in milliseconds.
++ * @returns {number|null} Milliseconds left, or null while there is no rate yet.
++ */
++const timeLeft = ({ phase, done, total, startedAt, lastDoneAt }, now) => {
++  if (phase !== "running" || done === 0 || !lastDoneAt) return null;
++  const msPerTask = (lastDoneAt - startedAt) / done;
++  const sinceLastTask = now - lastDoneAt;
++  return Math.max(msPerTask * (total - done) - sinceLastTask, done < total ? 1000 : 0);
++};
++
++/**
 + * The dialog's contents: heading, bar, timings and counts.
 + *
-+ * It is re-rendered from scratch on every update (see openActionProgress), so it only
-+ * reads the state it is given and keeps none of its own.
++ * It is re-rendered from scratch on every update and every timer tick (see
++ * openActionProgress), so it only reads the state it is given and keeps none of its own.
 + *
 + * @param {{ state: object }} props
-+ *   state.phase      current phase (see the file header)
-+ *   state.done       tasks sent so far
-+ *   state.total      tasks selected
-+ *   state.predicted  predictions the model created in this run
-+ *   state.skipped    tasks that already had a prediction from this model version
-+ *   state.missing    tasks that still have no prediction (no boxes, or backend error)
-+ *   state.startedAt  / state.finishedAt   timestamps for the elapsed time
-+ *   state.message    error text to show, if any
++ *   state.phase       current phase (see the file header)
++ *   state.done        tasks sent so far
++ *   state.total       tasks selected
++ *   state.predicted   predictions the model created in this run
++ *   state.skipped     tasks that already had a prediction from this model version
++ *   state.missing     tasks the ML backend gave no answer for (timeout or error)
++ *   state.startedAt   when the run started
++ *   state.lastDoneAt  when the most recent task finished (for the time-left estimate)
++ *   state.finishedAt  when the run ended (freezes the elapsed time)
++ *   state.message     error text to show, if any
 + */
 +const ProgressBody = ({ state }) => {
 +  const { phase, done, total, predicted, skipped, missing, startedAt, finishedAt, message } = state;
 +  const percent = total > 0 ? Math.round((done / total) * 100) : 0;
++  const now = Date.now();
 +
-+  // Elapsed time stops counting once the run has finished
-+  const elapsed = (finishedAt ?? Date.now()) - startedAt;
-+
-+  // Time left = average time per task so far × tasks remaining. Only shown while
-+  // running, and only once at least one batch has finished (otherwise there's no rate).
-+  const msPerTask = done > 0 ? elapsed / done : null;
-+  const remaining = msPerTask && phase === "running" ? msPerTask * (total - done) : null;
++  // Elapsed time keeps counting on every timer tick, and stops once the run has finished
++  const elapsed = (finishedAt ?? now) - startedAt;
++  const remaining = timeLeft(state, now);
 +
 +  const heading = {
 +    preparing: "Finding the selected tasks…",
 +    running: `Sending tasks to the model… ${done} of ${total}`,
-+    stopping: `Stopping after the current batch… ${done} of ${total}`,
++    stopping: `Stopping after the current task… ${done} of ${total}`,
 +    stopped: `Stopped. ${done} of ${total} tasks were sent to the model.`,
 +    done: `Finished. ${done} of ${total} tasks were sent to the model.`,
 +    failed: "Retrieve Predictions failed.",
 +  }[phase];
++
++  // Shown next to the elapsed time while running
++  let estimate = "";
++  if (remaining !== null) estimate = ` · about ${formatDuration(remaining)} left`;
++  else if (phase === "running") estimate = " · estimating time left…";
 +
 +  // Colour tokens come from Label Studio's design system (@humansignal/ui Tailwind config),
 +  // so the bar matches the app in both light and dark themes
@@ -251,9 +283,9 @@ index 0000000..dbc4687
 +
 +      <div className="flex justify-between text-sm text-neutral-content-subtle">
 +        <span>{percent}%</span>
-+        <span>
++        <span data-testid="action-progress-time">
 +          Elapsed {formatDuration(elapsed)}
-+          {remaining !== null && ` · about ${formatDuration(remaining)} left`}
++          {estimate}
 +        </span>
 +      </div>
 +
@@ -266,12 +298,15 @@ index 0000000..dbc4687
 +        </div>
 +      )}
 +
-+      {/* After the run, explain what "no prediction returned" means and how to retry */}
++      {/* After the run, explain what "no prediction returned" means and how to retry.
++          A task where the model found nothing still gets a prediction (with no boxes) and
++          counts as new, so a missing prediction always means the request to the ML backend
++          failed: it timed out, returned an error, or couldn't load the task's image. */}
 +      {missing > 0 && phase !== "running" && (
 +        <div className="text-sm text-neutral-content-subtle">
-+          Tasks with no prediction either got no boxes above the score threshold, or the ML backend returned an error
-+          (check its log). Run Retrieve Predictions again to retry them; tasks that already have predictions are
-+          skipped.
++          These tasks got no answer from the ML backend: the request timed out or the backend returned an error (check
++          the backend's window or log). A task where the model found nothing still counts as a new prediction, with no
++          boxes. Run Retrieve Predictions again to retry; tasks that already have predictions are skipped.
 +        </div>
 +      )}
 +
@@ -295,7 +330,7 @@ index 0000000..dbc4687
 + * }}
 + */
 +export const openActionProgress = ({ title }) => {
-+  // Set by the Stop button and read by the batch loop in AppStore before each batch
++  // Set by the Stop button and read by the loop in AppStore before each task
 +  let stopRequested = false;
 +
 +  const state = {
@@ -306,6 +341,7 @@ index 0000000..dbc4687
 +    skipped: 0,
 +    missing: 0,
 +    startedAt: Date.now(),
++    lastDoneAt: null,
 +    finishedAt: null,
 +    message: null,
 +  };
@@ -315,7 +351,13 @@ index 0000000..dbc4687
 +    if (FINISHED_PHASES.includes(state.phase)) {
 +      return (
 +        <div className="flex justify-end">
-+          <Button onClick={() => modal.close()} data-testid="action-progress-close">
++          <Button
++            onClick={() => {
++              stopTimer();
++              modal.close();
++            }}
++            data-testid="action-progress-close"
++          >
 +            Close
 +          </Button>
 +        </div>
@@ -327,7 +369,7 @@ index 0000000..dbc4687
 +        <Button
 +          look="outlined"
 +          variant="neutral"
-+          disabled={stopRequested} // one click is enough; the loop stops after the current batch
++          disabled={stopRequested} // one click is enough; the loop stops after the current task
 +          onClick={() => {
 +            stopRequested = true;
 +            update({ phase: "stopping" });
@@ -351,19 +393,42 @@ index 0000000..dbc4687
 +    width: 560,
 +  });
 +
++  /** Redraw the dialog from the current state. A copy is passed so React re-renders. */
++  const redraw = () => {
++    modal.update({ body: <ProgressBody state={{ ...state }} />, footer: footer() });
++  };
++
++  // Redraw every second while the run is going, so the elapsed time and time left keep
++  // counting even while one task takes a while. Without it the dialog only changes when
++  // a task finishes, and the clock looks frozen.
++  let timer = setInterval(redraw, TICK_MS);
++
++  /** Stop the one-second redraws (safe to call more than once). */
++  const stopTimer = () => {
++    if (timer) {
++      clearInterval(timer);
++      timer = null;
++    }
++  };
++
 +  /**
 +   * Merge new values into the state and redraw the dialog.
 +   *
 +   * @param {object} patch  Any of the state fields, e.g. { done: 20, predicted: 18 }.
 +   */
 +  const update = (patch) => {
-+    Object.assign(state, patch);
-+    // Freeze the elapsed time the first time the run reaches a finished phase
-+    if (FINISHED_PHASES.includes(state.phase) && !state.finishedAt) {
-+      state.finishedAt = Date.now();
++    // Record when the number of finished tasks last went up, for the time-left estimate
++    if (patch.done !== undefined && patch.done !== state.done) {
++      state.lastDoneAt = Date.now();
 +    }
-+    // Pass a copy so React sees new props and re-renders
-+    modal.update({ body: <ProgressBody state={{ ...state }} />, footer: footer() });
++    Object.assign(state, patch);
++
++    // Once the run reaches a finished phase: freeze the elapsed time and stop the timer
++    if (FINISHED_PHASES.includes(state.phase)) {
++      if (!state.finishedAt) state.finishedAt = Date.now();
++      stopTimer();
++    }
++    redraw();
 +  };
 +
 +  return {
@@ -372,7 +437,7 @@ index 0000000..dbc4687
 +  };
 +};
 diff --git a/web/libs/datamanager/src/stores/AppStore.js b/web/libs/datamanager/src/stores/AppStore.js
-index 1f9b5a8..2b1fa6f 100644
+index 1f9b5a8..2501c39 100644
 --- a/web/libs/datamanager/src/stores/AppStore.js
 +++ b/web/libs/datamanager/src/stores/AppStore.js
 @@ -1,6 +1,8 @@
@@ -384,7 +449,7 @@ index 1f9b5a8..2b1fa6f 100644
  import { FF_DEV_2887, FF_DISABLE_GLOBAL_USER_FETCHING, FF_LOPS_E_3, isFF } from "../utils/feature-flags";
  import { History } from "../utils/history";
  import { isDefined } from "../utils/utils";
-@@ -19,6 +21,21 @@ let networkActivity = null;
+@@ -19,6 +21,23 @@ let networkActivity = null;
  
  const PROJECTS_FETCH_PERIOD = 20 * 1000; // interaction timer for 20 sec fetch period for project api
  
@@ -396,17 +461,19 @@ index 1f9b5a8..2b1fa6f 100644
 + * label_studio/data_manager/actions/). Any action listed here goes through
 + * invokeActionInBatches() below; every other action keeps the stock behaviour.
 + *
-+ * batchSize: tasks per request. 10 keeps each request short (well under the server's
-+ * request timeout even for a slow model) while adding little overhead per request.
++ * batchSize: tasks per request. 1 sends each task on its own, so the progress bar and
++ * time estimate move after every task instead of jumping in large steps, and no single
++ * request comes near the server's request timeout. The extra cost per request is small
++ * next to the model's own time per task.
 + */
 +const BATCHED_ACTIONS = {
-+  retrieve_tasks_predictions: { title: "Retrieve Predictions", batchSize: 10 },
++  retrieve_tasks_predictions: { title: "Retrieve Predictions", batchSize: 1 },
 +};
 +
  export const AppStore = types
    .model("AppStore", {
      mode: types.optional(types.enumeration(["explorer", "labelstream", "labeling"]), "explorer"),
-@@ -770,6 +787,28 @@ export const AppStore = types
+@@ -770,6 +789,28 @@ export const AppStore = types
          Object.assign(actionParams, options.body);
        }
  
@@ -435,7 +502,7 @@ index 1f9b5a8..2b1fa6f 100644
        const result = yield self.apiCall("invokeAction", requestParams, {
          body: actionParams,
        });
-@@ -805,6 +844,132 @@ export const AppStore = types
+@@ -805,6 +846,132 @@ export const AppStore = types
        return result;
      }),
  
@@ -530,7 +597,7 @@ index 1f9b5a8..2b1fa6f 100644
 +        // batch as missing, show the error, and carry on with the next batch
 +        if (!res || res.error) {
 +          totals.missing += batch.length;
-+          progress.update({ ...totals, message: `A batch failed: ${errorText(res)}` });
++          progress.update({ ...totals, message: `A request failed: ${errorText(res)}` });
 +          continue;
 +        }
 +

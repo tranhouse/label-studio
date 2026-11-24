@@ -4,16 +4,17 @@ A change to **Label Studio 1.23.2 itself**, not to this pipeline. After installi
 **Data Manager > select tiles > Actions > Retrieve Predictions** opens a progress dialog
 instead of a spinner:
 
-- a bar that fills as the tiles are sent to the ML backend 10 at a time, with elapsed
-  time and time left
+- a bar that moves after **every tile**, as the tiles are sent to the ML backend one at a
+  time
+- the elapsed time and an estimate of the time left, both updating every second
 - three counts: **New predictions**, **Already predicted (skipped)** and **No prediction
   returned**. Stock Label Studio says "Retrieved N predictions" even when the backend is
-  down; this tells you how many tiles actually got boxes
-- a **Stop** button that finishes the current batch and stops. Running Retrieve
+  down; this tells you how many tiles the backend actually answered for
+- a **Stop** button that finishes the current tile and stops. Running Retrieve
   Predictions again carries on, because tiles that already have predictions from the
   current model are skipped
 
-Sending 10 tiles per request also avoids the timeout that stock Label Studio warns about
+Sending one tile per request also avoids the timeout that stock Label Studio warns about
 for large selections.
 
 Nothing else changes: the same ML backend, `best.pt` and score threshold are used, and
@@ -52,9 +53,11 @@ Reinstalling or upgrading Label Studio with pip replaces the patched files, so r
 3. Watch the dialog; click **Close** when it finishes. The table refreshes with the
    prediction counts.
 
-If **No prediction returned** is above 0, those tiles got no boxes above the score
-threshold or the backend had an error (check the backend window). Fix the cause and run
-Retrieve Predictions again on the same selection.
+If **No prediction returned** is above 0, the ML backend didn't answer for those tiles:
+the request timed out or the backend had an error (check the backend window). A tile
+where the model found nothing is different: it still gets a prediction, with no boxes,
+and counts as **New**. Fix the cause and run Retrieve Predictions again on the same
+selection.
 
 ## DFO server
 
@@ -138,14 +141,21 @@ Details worth knowing:
   - `with_predictions`: tasks that now have a prediction from this model version
 
   The dialog derives *skipped* = with_predictions − created, and *no prediction returned*
-  = batch size − with_predictions.
-- **Stop.** The loop checks a flag before sending each batch. A request already sent
-  can't be recalled, so Stop takes effect after the current batch.
-- **Errors.** A failed batch is counted as "no prediction returned" and its error is
-  shown in the dialog. The run continues with the next batch instead of opening Label
+  = tasks sent − with_predictions. When the model finds nothing, the backend still
+  returns a prediction with no boxes and Label Studio saves it, so *no prediction
+  returned* only counts requests that failed.
+- **Stop.** The loop checks a flag before sending each task. A request already sent
+  can't be recalled, so Stop takes effect after the current task.
+- **Errors.** A failed request is counted as "no prediction returned" and its error is
+  shown in the dialog. The run continues with the next task instead of opening Label
   Studio's global error popup.
-- **Batch size.** 10 tasks per request (`BATCHED_ACTIONS` in `AppStore.js`). That keeps
-  each request short even with a slow model, and costs little extra overhead.
+- **One task per request** (`batchSize: 1` in `BATCHED_ACTIONS`, `AppStore.js`). The bar
+  and time estimate move after every task, and no request comes near the timeout even
+  with a slow model. The extra cost per request is small next to the model's own time.
+- **The clock.** A one-second timer redraws the dialog while it runs, so the elapsed time
+  and time left keep counting while a tile is being predicted. The time left is the
+  average time per finished tile × tiles remaining, counting down between tiles. The
+  timer stops when the run ends.
 
 ### How it gets into your installed Label Studio
 
@@ -181,14 +191,18 @@ Then copy `label_studio/data_manager/actions/basic.py` to `basic.py` here, and z
 
 ## Tested
 
-On Label Studio 1.23.2 with 35 tiles and a stand-in ML backend, in a real browser:
+On Label Studio 1.23.2 in a headless browser, with a stand-in ML backend that takes 2
+seconds per tile:
 
-- All 35 tiles: the bar advanced 10 at a time; 35 new predictions, and the table showed
-  35 predictions afterwards
-- Stop pressed mid-run: stopped at 20 of 35; running again gave 15 new and 20 skipped
-- ML backend down: 35 tiles with no prediction returned, with the explanation shown
+- 6 tiles: the count went 1, 2, 3 … 6 of 6, one step per tile; the elapsed time ticked
+  every second and the time left counted down from about 11 s; 6 new predictions; the
+  backend received 6 one-tile requests; no page errors
+- Stop pressed after the first tile: the dialog said "Stopping after the current task",
+  ended at 2 of 6, and the elapsed time stayed frozen afterwards
+- ML backend down: 6 tiles with no prediction returned, with the corrected explanation
   (stock Label Studio reports success in this case)
-- `install_patch.py`: install, reinstall, and `--undo` restore the stock files byte for
-  byte
+- `install_patch.py` reinstall over the earlier version of the patch
 
-Not yet tested with the real YOLO backend and `best.pt`.
+The first version (10 tiles per request) was also tested with the real YOLO backend on
+Windows, where it confirmed the bar only moved in steps of 10 and the clock froze; this
+version fixes both.

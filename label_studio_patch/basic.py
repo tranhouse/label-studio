@@ -89,12 +89,12 @@ def selected_task_ids(project, queryset, **kwargs):
 
     Hidden helper used by the Retrieve Predictions progress dialog: it resolves the
     selection (including "select all" with filters and exclusions) once, then sends the
-    tasks to the ML backend in small batches so it can show progress and avoid the
+    tasks to the ML backend one at a time so it can show progress and avoid the
     request timeout that one large Retrieve Predictions call can hit.
     """
     # The queryset arrives already filtered by ProjectActionsAPI.post() from the request
     # body (selectedItems, filters), the same way as for every other action. Sorting by
-    # ID makes batches go down the table in a stable order.
+    # ID makes the tasks go down the table in a stable order.
     task_ids = list(queryset.order_by('id').values_list('id', flat=True))
     return {'task_ids': task_ids, 'total': len(task_ids)}
 
@@ -248,9 +248,10 @@ actions: list[DataManagerAction] = [
         'dialog': {
             'title': 'Retrieve Predictions',
             # [DFO progress patch] The stock text warned about timeouts and suggested the API
-            # instead; batching removes that problem, so the text describes the progress bar.
+            # instead; sending tasks one at a time removes that problem, so the text describes
+            # the progress bar.
             'text': 'Send the selected tasks to the ML backend connected to the project. '
-            'Tasks are sent in small batches and a progress bar shows how many are done. '
+            'Tasks are sent one at a time and a progress bar shows how many are done. '
             'Please confirm your action.',
             'type': 'confirm',
         },

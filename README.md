@@ -314,14 +314,16 @@ Then in Label Studio, in the test project:
 
    **A. Browser, with the patch.** In the Data Manager, tick the box at the top to select
    all tasks, then choose **Actions > Retrieve Predictions > OK**. A dialog shows a bar
-   that fills 10 tiles at a time, time left, and three counts:
+   that moves after every tile, the elapsed time and time left (updating every second),
+   and three counts:
 
    - **New predictions**: tiles the model just predicted
    - **Already predicted (skipped)**: tiles that already had predictions from this model
-   - **No prediction returned**: tiles with no boxes above the score threshold, or a
-     backend error (check window 3)
+   - **No prediction returned**: the backend didn't answer for these tiles (a timeout
+     or an error; check window 3). A tile where the model found nothing still counts as
+     a new prediction, with no boxes
 
-   **Stop** finishes the current batch and stops. Click **Close** when it's done; the
+   **Stop** finishes the current tile and stops. Click **Close** when it's done; the
    table refreshes. To continue after stopping, or to retry tiles with no prediction, run
    it again on the same selection. Tiles that already have predictions are skipped.
 
@@ -399,6 +401,9 @@ anything that doesn't match.
 | No progress dialog after installing the patch | Restart Label Studio and refresh the page with **Ctrl+F5**. If it's still missing, check `python -m pip show label-studio` says 1.23.2 and run `install_patch.py` again (a `pip install` may have replaced the patched files) |
 | `install_patch.py` says another version is installed | `python -m pip install label-studio==1.23.2`, then run it again |
 | Fewer tasks than tiles after `03_upload_tiles.py` | Older copies of the script sent every tile under the same field name, and Label Studio kept only one per batch. Pull the latest script, delete the project's tasks and upload again |
+| Retrieve Predictions does nothing, or every tile has no prediction, in a new project | Each project needs its own model connection: **Settings > Model > Connect Model** with `http://localhost:9090` |
+| Label Studio log: `Read timed out. (read timeout=100.0)`; dialog: no prediction returned | The backend couldn't download the tiles from Label Studio. Restart the backend with `LABEL_STUDIO_URL` and `LABEL_STUDIO_HOST` set to `http://127.0.0.1:8080` and your current legacy token in `LABEL_STUDIO_API_KEY`. Check: no `GET /data/upload/...` lines in the Label Studio window means the backend never reached it |
+| "URL resolves to a reserved network address" when connecting the model, even with `ML_BLOCK_LOCAL_IP` set | Label Studio 1.23.2 also tries to register a webhook at the backend address, and that check always blocks local addresses. The model connection is still saved: refresh **Settings > Model** and it shows **Connected** |
 | 401 / 403 errors in the backend window | The backend can't download tiles; set `LABEL_STUDIO_API_KEY` to the legacy token and restart it |
 | Retrieve Predictions returns no boxes | Lower `model_score_threshold`, and check that the label names match the model's classes |
 
